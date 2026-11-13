@@ -46,33 +46,32 @@ jobs:
         run: |
           cargo tauri android init
 
-      - name: Biên dịch Android APK (Tự động ký chứng chỉ Debug để cài ngay trên điện thoại)
+      - name: Biên dịch Android APK (Release - Tối ưu dung lượng và tốc độ)
         working-directory: src-tauri
         run: |
-          cargo tauri android build --apk --target aarch64 --debug
+          cargo tauri android build --apk --target aarch64
 
-      - name: Chuẩn bị file APK cài đặt
-        id: prepare_apk
+      - name: Ký chứng chỉ APK bằng apksigner (Để cài đặt trực tiếp trên Android)
         run: |
           mkdir -p release_apk
           find src-tauri/gen/android/app/build/outputs/apk/ -name "*.apk" -exec cp {} release_apk/DiscordReactor.apk \;
+          
+          # Tạo chứng chỉ và ký file APK
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign --ks debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android release_apk/DiscordReactor.apk
+          
+          # Xác thực chữ ký
+          $ANDROID_HOME/build-tools/34.0.0/apksigner verify release_apk/DiscordReactor.apk
           ls -lh release_apk/
 
-      - name: Tạo link tải trực tiếp (Dự phòng khi hết dung lượng Artifact)
-        run: |
-          DIRECT_LINK=$(curl -s --upload-file release_apk/DiscordReactor.apk https://bashupload.com/DiscordReactor.apk | grep -o 'https://[^ ]*')
-          echo "DIRECT_LINK=$DIRECT_LINK" >> $GITHUB_ENV
-          echo "### 📱 LINK TẢI TRỰC TIẾP FILE APK VỀ ĐIỆN THOẠI:" >> $GITHUB_STEP_SUMMARY
-          echo "👉 **[Bấm vào đây để tải file DiscordReactor.apk]($DIRECT_LINK)**" >> $GITHUB_STEP_SUMMARY
-
-      - name: Tải lên GitHub Releases (Không bị giới hạn dung lượng Artifact)
+      - name: Đăng tải lên GitHub Releases (Tải trực tiếp tốc độ cao)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0
           name: "Discord Auto-Reactor v1.0.0 (Android APK)"
           body: |
             ### Ứng dụng Discord Auto-Reactor cho Android (Rust Tauri v2)
-            - **Dung lượng siêu nhẹ**: Tiết kiệm RAM (15 - 35 MB), tối ưu pin khi chạy nền.
-            - **Cài đặt**: Tải file `DiscordReactor.apk` bên dưới về điện thoại và mở lên để cài đặt.
+            - **Hiệu năng**: Viết bằng Rust 100%, tiêu thụ chỉ 15 - 35 MB RAM, không tốn pin khi chạy nền.
+            - **Cài đặt**: Tải file `DiscordReactor.apk` bên dưới về điện thoại và mở lên để cài đặt trực tiếp.
           files: release_apk/DiscordReactor.apk
           token: ${{ secrets.GITHUB_TOKEN }}
