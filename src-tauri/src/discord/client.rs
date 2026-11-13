@@ -10,6 +10,7 @@ const DEFAULT_USER_AGENT: &str =
 
 #[derive(Debug, Deserialize)]
 struct RateLimitResponse {
+    #[allow(dead_code)]
     pub message: Option<String>,
     pub retry_after: Option<f64>,
 }

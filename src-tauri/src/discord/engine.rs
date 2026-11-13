@@ -1,6 +1,6 @@
 use crate::config::ConfigManager;
 use crate::discord::client::DiscordClient;
-use crate::models::{CategoryConfig, ChannelProgress, DiscordMessage, EngineStatus};
+use crate::models::{CategoryConfig, ChannelProgress, EngineStatus};
 use chrono::Local;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
