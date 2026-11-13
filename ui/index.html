@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Discord Auto-Reactor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-box">
+        <span class="logo-icon">⚡</span>
+        <h1>Discord Reactor</h1>
+      </div>
+      <div id="status-badge" class="badge badge-stopped">● ĐÃ DỪNG</div>
+    </header>
+
+    <!-- Main Content Screens -->
+    <main class="app-main">
+      <!-- 1. TAB DASHBOARD -->
+      <section id="tab-dashboard" class="tab-screen active">
+        <div class="card account-status-card">
+          <div class="card-row">
+            <span class="label-muted">Tài khoản hoạt động:</span>
+            <strong id="dash-account-name" class="highlight-text">Chưa chọn</strong>
+          </div>
+          <div class="stats-row">
+            <div class="stat-item">
+              <span class="stat-val" id="dash-reactions">0</span>
+              <span class="stat-desc">Reactions lượt này</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+              <span class="stat-val" id="dash-channels">0</span>
+              <span class="stat-desc">Kênh đã quét</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="action-btn-row">
+          <button id="btn-toggle-bot" class="btn btn-success btn-large">
+            BẮT ĐẦU CHẠY BOT
+          </button>
+        </div>
+
+        <div class="log-section">
+          <div class="section-title-row">
+            <h3>Nhật ký hoạt động (Live Logs)</h3>
+            <button id="btn-clear-log" class="btn btn-sm btn-secondary">Xóa log</button>
+          </div>
+          <div id="log-terminal" class="terminal-box">
+            <div class="log-line text-muted">[00:00:00] Sẵn sàng kết nối...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. TAB ACCOUNTS -->
+      <section id="tab-accounts" class="tab-screen">
+        <div class="section-title-row">
+          <h3>Quản lý Đa tài khoản</h3>
+          <button id="btn-open-add-acc" class="btn btn-sm btn-primary">+ Thêm tài khoản</button>
+        </div>
+        <p class="section-desc">Lưu nhiều tài khoản để chuyển đổi qua lại nhanh chóng.</p>
+        <div id="accounts-list" class="items-list">
+          <!-- Render dynamically -->
+        </div>
+      </section>
+
+      <!-- 3. TAB SETTINGS -->
+      <section id="tab-settings" class="tab-screen">
+        <div class="section-title-row">
+          <h3>Cấu hình tham số</h3>
+        </div>
+        <div class="settings-form">
+          <div class="form-group card">
+            <label for="cfg-delay">Thời gian chờ (Delay - Giây):</label>
+            <input type="number" id="cfg-delay" step="0.1" min="0.5" value="1.0" class="input-dark">
+            <small class="text-muted">Khuyến nghị: $\ge$ 1.0 giây để tránh Discord giới hạn.</small>
+          </div>
+
+          <div class="form-group card">
+            <label for="cfg-conc">Số kênh xử lý đồng thời:</label>
+            <input type="number" id="cfg-conc" min="1" max="10" value="4" class="input-dark">
+            <small class="text-muted">Số luồng quét song song (mặc định: 4).</small>
+          </div>
+
+          <div class="form-group card toggle-row">
+            <div>
+              <label>Bỏ qua tin nhắn từ Bot</label>
+              <div class="text-muted small">Không react vào tin nhắn của Bot khác.</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfg-skip-bots" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group card toggle-row">
+            <div>
+              <label>Quét toàn bộ tin nhắn (Full scan)</label>
+              <div class="text-muted small">Quét toàn bộ lịch sử thay vì chỉ tin mới.</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfg-full-scan" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group card">
+            <label>Tiến trình quét đã lưu:</label>
+            <button id="btn-reset-prog" class="btn btn-danger btn-block">Đặt lại tiến trình (Quét lại từ đầu)</button>
+          </div>
+
+          <button id="btn-save-settings" class="btn btn-primary btn-block btn-large">LƯU CÀI ĐẶT</button>
+        </div>
+      </section>
+
+      <!-- 4. TAB CATEGORIES -->
+      <section id="tab-categories" class="tab-screen">
+        <div class="section-title-row">
+          <h3>Danh mục Category</h3>
+          <button id="btn-open-add-cat" class="btn btn-sm btn-primary">+ Thêm Category</button>
+        </div>
+        <p class="section-desc">Cấu hình Category ID và các Channel ID muốn bỏ qua.</p>
+        <div id="categories-list" class="items-list">
+          <!-- Render dynamically -->
+        </div>
+      </section>
+
+      <!-- 5. TAB EMOJI FILTERS -->
+      <section id="tab-filters" class="tab-screen">
+        <div class="section-title-row">
+          <h3>Bộ lọc cảm xúc (Emoji)</h3>
+        </div>
+        <div class="form-group card">
+          <label for="cfg-whitelist">Danh sách cho phép (Whitelist):</label>
+          <textarea id="cfg-whitelist" rows="3" class="input-dark" placeholder="❤️, 👍, 🎉 (để trống nếu muốn react tất cả)"></textarea>
+          <small class="text-muted">Phân tách bằng dấu phẩy. Nếu có danh sách này, bot CHỈ react các emoji trên.</small>
+        </div>
+
+        <div class="form-group card">
+          <label for="cfg-blacklist">Danh sách cấm (Blacklist):</label>
+          <textarea id="cfg-blacklist" rows="3" class="input-dark" placeholder="👎, 😡, 💩 (bỏ qua không bao giờ react)"></textarea>
+          <small class="text-muted">Phân tách bằng dấu phẩy. Bot sẽ không bao giờ react các emoji này.</small>
+        </div>
+
+        <button id="btn-save-filters" class="btn btn-primary btn-block btn-large">LƯU BỘ LỌC EMOJI</button>
+      </section>
+    </main>
+
+    <!-- Bottom Navigation Bar -->
+    <nav class="bottom-nav">
+      <button class="nav-item active" data-tab="tab-dashboard">
+        <span class="nav-icon">📊</span>
+        <span class="nav-label">Bảng tin</span>
+      </button>
+      <button class="nav-item" data-tab="tab-accounts">
+        <span class="nav-icon">👤</span>
+        <span class="nav-label">Tài khoản</span>
+      </button>
+      <button class="nav-item" data-tab="tab-settings">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label">Cài đặt</span>
+      </button>
+      <button class="nav-item" data-tab="tab-categories">
+        <span class="nav-icon">📁</span>
+        <span class="nav-label">Danh mục</span>
+      </button>
+      <button class="nav-item" data-tab="tab-filters">
+        <span class="nav-icon">😀</span>
+        <span class="nav-label">Bộ lọc</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Modal Thêm/Sửa Tài khoản -->
+  <div id="modal-account" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h3 id="modal-acc-title">Thêm tài khoản Discord</h3>
+      <div class="form-group">
+        <label>Tên gợi nhớ:</label>
+        <input type="text" id="modal-acc-name" placeholder="Ví dụ: Acc Chính" class="input-dark">
+      </div>
+      <div class="form-group">
+        <label>Discord User Token:</label>
+        <input type="password" id="modal-acc-token" placeholder="Dán Token Discord tại đây" class="input-dark">
+      </div>
+      <div class="modal-actions">
+        <button id="modal-acc-cancel" class="btn btn-secondary">Hủy</button>
+        <button id="modal-acc-save" class="btn btn-success">Lưu tài khoản</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Thêm/Sửa Category -->
+  <div id="modal-category" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h3 id="modal-cat-title">Thêm Category</h3>
+      <div class="form-group">
+        <label>Tên hiển thị:</label>
+        <input type="text" id="modal-cat-name" placeholder="Ví dụ: Server Game" class="input-dark">
+      </div>
+      <div class="form-group">
+        <label>Category ID (Bắt buộc):</label>
+        <input type="text" id="modal-cat-id" placeholder="1281146625435369472" class="input-dark">
+      </div>
+      <div class="form-group">
+        <label>Channel ID loại trừ (phân tách dấu phẩy):</label>
+        <textarea id="modal-cat-excluded" rows="3" placeholder="1229710841927045222, 1246901718143205437..." class="input-dark"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button id="modal-cat-cancel" class="btn btn-secondary">Hủy</button>
+        <button id="modal-cat-save" class="btn btn-success">Lưu Category</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
