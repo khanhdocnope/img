@@ -231,8 +231,66 @@ document.getElementById("btn-save-filters").addEventListener("click", async () =
   alert("Đã lưu bộ lọc Emoji thành công!");
 });
 
-// 9. Modals Account
+// 9. Modals Account & Token Guide
 const modalAcc = document.getElementById("modal-account");
+const modalTokenGuide = document.getElementById("modal-token-guide");
+
+// Mở/Đóng hướng dẫn lấy token 1-chạm
+document.getElementById("btn-open-token-guide").addEventListener("click", () => {
+  modalTokenGuide.classList.remove("hidden");
+});
+document.getElementById("btn-close-token-guide").addEventListener("click", () => {
+  modalTokenGuide.classList.add("hidden");
+});
+
+// Sao chép đoạn mã JavaScript lấy token
+const BOOKMARKLET_SCRIPT = `javascript:(function(){try{window.webpackChunkdiscord_app.push([[''],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]);const t=m.find(m=>m?.exports?.default?.getToken!==void 0).exports.default.getToken();if(t){navigator.clipboard.writeText(t);alert("ĐÃ COPY TOKEN VÀO BỘ NHỚ TẠM!\\n\\nHãy mở lại App và bấm 'Dán từ Clipboard'.");}else{alert("Không tìm thấy Token. Hãy đảm bảo bạn đã đăng nhập Discord thành công trên trang web này.");}}catch(e){alert("Lỗi: "+e.message);}})();`;
+
+document.getElementById("btn-copy-script").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(BOOKMARKLET_SCRIPT);
+    const btn = document.getElementById("btn-copy-script");
+    btn.textContent = "✅ ĐÃ SAO CHÉP MÃ VÀO BỘ NHỚ TẠM!";
+    btn.className = "btn btn-success btn-block";
+    setTimeout(() => {
+      btn.textContent = "📋 Sao chép mã lấy Token";
+      btn.className = "btn btn-primary btn-block";
+    }, 2500);
+  } catch (e) {
+    alert("Không thể tự động sao chép: " + e);
+  }
+});
+
+// Nút "Dán từ Clipboard" ngoài màn hình danh sách tài khoản
+document.getElementById("btn-paste-clipboard").addEventListener("click", async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    const token = text.trim();
+    if (!token || token.length < 20) {
+      alert("Bộ nhớ tạm không chứa Token Discord hợp lệ!\nHãy xem hướng dẫn lấy Token trước.");
+      return;
+    }
+    const name = prompt("Nhập tên gợi nhớ cho tài khoản:", "Tài khoản Discord") || "Tài khoản Discord";
+    await invoke("add_or_update_account", { name, token, accountId: null });
+    alert("Đã thêm tài khoản thành công!");
+    await loadConfig();
+  } catch (e) {
+    alert("Không thể đọc bộ nhớ tạm: " + e + "\nVui lòng dùng nút '+ Thêm thủ công' và dán vào ô.");
+  }
+});
+
+// Nút dán bên trong Modal thêm tài khoản
+document.getElementById("modal-acc-paste-btn").addEventListener("click", async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) {
+      document.getElementById("modal-acc-token").value = text.trim();
+    }
+  } catch (e) {
+    alert("Vui lòng chạm giữ vào ô và chọn Dán (Paste).");
+  }
+});
+
 document.getElementById("btn-open-add-acc").addEventListener("click", () => {
   document.getElementById("modal-acc-name").value = "";
   document.getElementById("modal-acc-token").value = "";

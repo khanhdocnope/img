@@ -60,9 +60,24 @@
       <section id="tab-accounts" class="tab-screen">
         <div class="section-title-row">
           <h3>Quản lý Đa tài khoản</h3>
-          <button id="btn-open-add-acc" class="btn btn-sm btn-primary">+ Thêm tài khoản</button>
+          <div style="display:flex; gap:6px;">
+            <button id="btn-paste-clipboard" class="btn btn-sm btn-success">📋 Dán từ Clipboard</button>
+            <button id="btn-open-add-acc" class="btn btn-sm btn-primary">+ Thêm thủ công</button>
+          </div>
         </div>
         <p class="section-desc">Lưu nhiều tài khoản để chuyển đổi qua lại nhanh chóng.</p>
+
+        <!-- Banner Hướng dẫn lấy Token 1-chạm -->
+        <div class="card token-guide-banner">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <strong style="color:var(--accent-blurple)">⚡ Bạn dùng thuần điện thoại?</strong>
+              <div class="text-muted small">Xem cách lấy Token trong 10 giây qua trình duyệt điện thoại.</div>
+            </div>
+            <button id="btn-open-token-guide" class="btn btn-sm btn-secondary">Xem cách lấy</button>
+          </div>
+        </div>
+
         <div id="accounts-list" class="items-list">
           <!-- Render dynamically -->
         </div>
@@ -184,12 +199,42 @@
         <input type="text" id="modal-acc-name" placeholder="Ví dụ: Acc Chính" class="input-dark">
       </div>
       <div class="form-group">
-        <label>Discord User Token:</label>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <label>Discord User Token:</label>
+          <button id="modal-acc-paste-btn" class="btn btn-sm btn-secondary" style="font-size:11px; padding:3px 8px;">Dán từ Clipboard</button>
+        </div>
         <input type="password" id="modal-acc-token" placeholder="Dán Token Discord tại đây" class="input-dark">
       </div>
       <div class="modal-actions">
         <button id="modal-acc-cancel" class="btn btn-secondary">Hủy</button>
         <button id="modal-acc-save" class="btn btn-success">Lưu tài khoản</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Hướng dẫn Lấy Token trên điện thoại -->
+  <div id="modal-token-guide" class="modal-overlay hidden">
+    <div class="modal-card" style="max-height:85vh; overflow-y:auto;">
+      <h3>⚡ Cách lấy Discord Token trên điện thoại</h3>
+      
+      <p class="text-muted small">Chỉ mất 10 giây qua trình duyệt điện thoại (Chrome, Safari, Brave...):</p>
+      
+      <div style="display:flex; flex-direction:column; gap:8px; font-size:12px; line-height:1.5;">
+        <div><strong>Bước 1:</strong> Bấm nút sao chép đoạn mã bên dưới.</div>
+        <button id="btn-copy-script" class="btn btn-primary btn-block" style="padding:10px;">📋 Sao chép mã lấy Token</button>
+
+        <div><strong>Bước 2:</strong> Mở trình duyệt điện thoại (Chrome/Safari) và truy cập:</div>
+        <div class="card" style="padding:6px 10px; font-family:monospace; color:var(--accent-blurple); text-align:center;">https://discord.com/app</div>
+        <div class="text-muted small"><i>(Đăng nhập tài khoản Discord nếu chưa đăng nhập. Nhấn 3 chấm trình duyệt chọn "Trang web cho máy tính" / Desktop site).</i></div>
+
+        <div><strong>Bước 3:</strong> Trên thanh địa chỉ của trình duyệt, xóa hết và <strong>Dán đoạn mã vừa chép</strong> vào, rồi bấm <strong>Enter / Đi</strong>.</div>
+        <div class="text-muted small"><i>(Lưu ý: Nếu trình duyệt tự xóa chữ <code>javascript:</code> ở đầu, hãy gõ thêm chữ <code>javascript:</code> rồi dán tiếp).</i></div>
+
+        <div><strong>Bước 4:</strong> Trình duyệt sẽ hiện Popup báo đã copy Token. Quay lại App này và bấm <strong>"Dán từ Clipboard"</strong> là xong!</div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-close-token-guide" class="btn btn-secondary btn-block">Đã hiểu, đóng</button>
       </div>
     </div>
   </div>
