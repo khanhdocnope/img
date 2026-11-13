@@ -34,6 +34,7 @@ android.permissions = INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK,FOREGROUND_SERVICE
 android.api = 34
 android.minapi = 26
 android.ndk = 25b
+android.accept_sdk_license = True
 
 # Kiến trúc CPU hỗ trợ cho Android (arm64-v8a phổ biến nhất trên 99% smartphone)
 android.archs = arm64-v8a, armeabi-v7a
