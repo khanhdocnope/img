@@ -16,7 +16,7 @@ jobs:
       - name: Cài đặt Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android, armv7-linux-androideabi
+          targets: aarch64-linux-android
 
       - name: Cài đặt Java JDK 17
         uses: actions/setup-java@v4
@@ -46,11 +46,14 @@ jobs:
       - name: Biên dịch Android APK (Release)
         working-directory: src-tauri
         run: |
-          cargo tauri android build --apk --target aarch64-linux-android
+          cargo tauri android build --apk --target aarch64
 
       - name: Tải lên file APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: DiscordReactor-Rust-APK
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            src-tauri/target/**/release/apk/*.apk
+            src-tauri/target/**/*.apk
           retention-days: 7
