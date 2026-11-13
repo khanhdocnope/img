@@ -1,0 +1,32 @@
+{
+  "accounts": [],
+  "active_account_id": null,
+  "bot_settings": {
+    "delay": 1.0,
+    "max_messages_per_channel": null,
+    "skip_bot_messages": true,
+    "full_scan": true,
+    "concurrent_channels": 4
+  },
+  "categories": [
+    {
+      "id": 1281146625435369472,
+      "name": "Mặc định",
+      "excluded_channels": [
+        1229710841927045222,
+        1246901718143205437,
+        1516859270140792842,
+        1516859246476787933,
+        1517099249257414777,
+        1196522451857842287,
+        1232731962834161775,
+        1437860347032895518,
+        1390315019006251008,
+        1281171567513960461,
+        1357284374684500159
+      ]
+    }
+  ],
+  "emoji_whitelist": [],
+  "emoji_blacklist": []
+}
