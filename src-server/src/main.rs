@@ -8,10 +8,7 @@ pub mod discord;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
+    response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
     Json, Router,
 };
@@ -19,7 +16,7 @@ use config::ConfigManager;
 use discord::client::DiscordClient;
 use discord::engine::ReactorEngine;
 use futures_util::stream::Stream;
-use models::{Account, BotSettings, CategoryConfig, EmojiSenderSettings, TokenCheck};
+use models::{BotSettings, CategoryConfig, EmojiSenderSettings};
 use parking_lot::RwLock;
 use std::net::SocketAddr;
 use std::path::PathBuf;

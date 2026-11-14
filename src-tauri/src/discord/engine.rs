@@ -1,7 +1,8 @@
 use crate::config::ConfigManager;
 use crate::discord::client::{DiscordClient, InvalidMeter, SendOutcome};
 use crate::models::{
-    Account, BotSettings, CategoryConfig, Config, DiscordMessage, EngineStatus, WorkerStatus,
+    Account, BotSettings, CategoryConfig, ChannelProgress, Config, DiscordMessage, EngineStatus,
+    WorkerStatus,
 };
 use chrono::Local;
 use parking_lot::{Mutex, RwLock};

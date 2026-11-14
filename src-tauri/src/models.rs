@@ -168,10 +168,6 @@ pub struct GuildEmoji {
     pub available: bool,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub accounts: Vec<Account>,
