@@ -52,6 +52,8 @@ pub struct Account {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotSettings {
     pub delay: f64,
+    #[serde(default)]
+    pub delay_max: Option<f64>,
     pub max_messages_per_channel: Option<u32>,
     pub skip_bot_messages: bool,
     pub full_scan: bool,
@@ -62,6 +64,7 @@ impl Default for BotSettings {
     fn default() -> Self {
         Self {
             delay: 1.0,
+            delay_max: Some(2.5),
             max_messages_per_channel: None,
             skip_bot_messages: true,
             full_scan: true,
@@ -185,6 +188,13 @@ pub struct EngineStatus {
 }
 
 // --- Discord API Payloads ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordGuild {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordUser {

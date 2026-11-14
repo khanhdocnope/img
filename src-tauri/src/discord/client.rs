@@ -1,4 +1,4 @@
-use crate::models::{DiscordChannel, DiscordMessage, DiscordUser, GuildEmoji};
+use crate::models::{DiscordChannel, DiscordGuild, DiscordMessage, DiscordUser, GuildEmoji};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use std::time::Duration;
@@ -80,6 +80,25 @@ impl DiscordClient {
         resp.json::<DiscordUser>()
             .await
             .map_err(|e| format!("Không thể parse thông tin tài khoản: {}", e))
+    }
+
+    /// Lấy danh sách server mà tài khoản đang tham gia
+    pub async fn get_user_guilds(&self) -> Result<Vec<DiscordGuild>, String> {
+        let url = format!("{}/users/@me/guilds", BASE_URL);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("NET: Lỗi kết nối get_user_guilds: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Lỗi HTTP {} khi lấy danh sách server", resp.status()));
+        }
+
+        resp.json::<Vec<DiscordGuild>>()
+            .await
+            .map_err(|e| format!("Không thể parse danh sách server: {}", e))
     }
 
     /// Lấy thông tin kênh (để tìm guild_id của Category)

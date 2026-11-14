@@ -39,6 +39,7 @@ async function loadConfig() {
 
     // Settings
     document.getElementById("cfg-delay").value = currentConfig.bot_settings.delay || 1.0;
+    document.getElementById("cfg-delay-max").value = currentConfig.bot_settings.delay_max ?? (currentConfig.bot_settings.delay || 2.5);
     document.getElementById("cfg-conc").value = currentConfig.bot_settings.concurrent_channels || 4;
     document.getElementById("cfg-skip-bots").checked = currentConfig.bot_settings.skip_bot_messages;
     document.getElementById("cfg-full-scan").checked = currentConfig.bot_settings.full_scan;
@@ -251,8 +252,11 @@ document.getElementById("btn-clear-log").addEventListener("click", async () => {
 
 // 8. Lưu Cài đặt & Bộ lọc
 document.getElementById("btn-save-settings").addEventListener("click", async () => {
+  const dMin = parseFloat(document.getElementById("cfg-delay").value) || 1.0;
+  const dMax = parseFloat(document.getElementById("cfg-delay-max").value) || dMin;
   const settings = {
-    delay: parseFloat(document.getElementById("cfg-delay").value) || 1.0,
+    delay: Math.min(dMin, dMax),
+    delay_max: Math.max(dMin, dMax),
     concurrent_channels: parseInt(document.getElementById("cfg-conc").value) || 4,
     skip_bot_messages: document.getElementById("cfg-skip-bots").checked,
     full_scan: document.getElementById("cfg-full-scan").checked,
@@ -411,6 +415,151 @@ document.getElementById("modal-cat-save").addEventListener("click", async () => 
   await invoke("update_categories", { categories: currentConfig.categories });
   modalCat.classList.add("hidden");
   await loadConfig();
+});
+
+// ---- Channel Picker (Chọn Category & Kênh trực quan từ Server) ----
+const modalPicker = document.getElementById("modal-channel-picker");
+const pickerServerSelect = document.getElementById("picker-server-select");
+const pickerCategoriesList = document.getElementById("picker-categories-list");
+const pickerStatus = document.getElementById("picker-status");
+
+document.getElementById("btn-open-picker").addEventListener("click", async () => {
+  modalPicker.classList.remove("hidden");
+  await loadPickerServers();
+});
+
+document.getElementById("btn-close-channel-picker").addEventListener("click", () => {
+  modalPicker.classList.add("hidden");
+});
+
+document.getElementById("btn-refresh-servers").addEventListener("click", async () => {
+  await loadPickerServers();
+});
+
+async function loadPickerServers() {
+  pickerServerSelect.innerHTML = '<option value="">-- Đang tải danh sách server... --</option>';
+  pickerCategoriesList.innerHTML = "";
+  pickerStatus.style.display = "block";
+  pickerStatus.textContent = "Đang kết nối tới Discord để lấy danh sách server...";
+
+  try {
+    const guilds = await invoke("fetch_user_guilds");
+    if (!guilds || guilds.length === 0) {
+      pickerStatus.textContent = "Không tìm thấy server nào hoặc tài khoản chưa tham gia server nào.";
+      pickerServerSelect.innerHTML = '<option value="">(Không có server)</option>';
+      return;
+    }
+
+    pickerStatus.style.display = "none";
+    pickerServerSelect.innerHTML = '<option value="">-- Chọn Server (' + guilds.length + ') --</option>' +
+      guilds.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join("");
+  } catch (err) {
+    pickerStatus.style.display = "block";
+    pickerStatus.textContent = "Lỗi tải server: " + err;
+    pickerServerSelect.innerHTML = '<option value="">(Lỗi tải)</option>';
+    toast(err, "err");
+  }
+}
+
+pickerServerSelect.addEventListener("change", async () => {
+  const guildId = pickerServerSelect.value;
+  pickerCategoriesList.innerHTML = "";
+  if (!guildId) return;
+
+  pickerStatus.style.display = "block";
+  pickerStatus.textContent = "Đang tải danh mục và các kênh của server...";
+
+  try {
+    const channels = await invoke("fetch_guild_channels", { guildId });
+    pickerStatus.style.display = "none";
+
+    if (!channels || channels.length === 0) {
+      pickerCategoriesList.innerHTML = '<div class="empty">Server này không có kênh text nào.</div>';
+      return;
+    }
+
+    // Tách categories (channel_type === 4) và text channels (channel_type === 0)
+    const categories = channels.filter(c => c.channel_type === 4);
+    const textChannels = channels.filter(c => c.channel_type === 0);
+
+    if (categories.length === 0) {
+      pickerCategoriesList.innerHTML = '<div class="empty">Server này không chia danh mục (Category).</div>';
+      return;
+    }
+
+    categories.forEach(cat => {
+      const children = textChannels.filter(ch => ch.parent_id === cat.id);
+      const catCard = document.createElement("div");
+      catCard.className = "row-card";
+      catCard.style.flexDirection = "column";
+      catCard.style.alignItems = "stretch";
+      catCard.style.gap = "8px";
+
+      // Kiểm tra xem category này đã có trong cấu hình chưa
+      const isConfigured = (currentConfig?.categories || []).some(c => String(c.id) === String(cat.id));
+
+      let channelsHtml = children.map(ch => `
+        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text); padding:3px 0; cursor:pointer;">
+          <input type="checkbox" class="ch-check" data-id="${esc(ch.id)}" checked style="accent-color:var(--accent);">
+          <span># ${esc(ch.name || ch.id)}</span>
+        </label>
+      `).join("");
+
+      if (!channelsHtml) {
+        channelsHtml = '<div class="small text-muted" style="font-style:italic;">(Không có kênh text nào trong category này)</div>';
+      }
+
+      catCard.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:6px;">
+          <div>
+            <strong style="font-size:14px;">${esc(cat.name || "Danh mục")}</strong>
+            <div class="small text-muted">ID: ${esc(cat.id)} · ${children.length} kênh text</div>
+          </div>
+          <button class="btn btn-sm btn-primary btn-add-this-cat">
+            ${isConfigured ? "Cập nhật" : "+ Thêm"}
+          </button>
+        </div>
+        <div class="channels-box" style="display:flex; flex-direction:column; padding-left:4px;">
+          ${channelsHtml}
+        </div>
+      `;
+
+      // Nút thêm/cập nhật category
+      catCard.querySelector(".btn-add-this-cat").addEventListener("click", async () => {
+        // Thu thập các kênh không được tích (unchecked) làm excluded_channels
+        const excluded = [];
+        catCard.querySelectorAll(".ch-check").forEach(chk => {
+          if (!chk.checked) {
+            excluded.push(chk.getAttribute("data-id"));
+          }
+        });
+
+        const newCat = {
+          id: cat.id,
+          name: cat.name || ("Category " + cat.id),
+          excluded_channels: excluded
+        };
+
+        if (!currentConfig.categories) currentConfig.categories = [];
+        const existingIdx = currentConfig.categories.findIndex(c => String(c.id) === String(cat.id));
+        if (existingIdx >= 0) {
+          currentConfig.categories[existingIdx] = newCat;
+        } else {
+          currentConfig.categories.push(newCat);
+        }
+
+        await invoke("update_categories", { categories: currentConfig.categories });
+        toast(`Đã thêm “${cat.name}” (${children.length - excluded.length}/${children.length} kênh)!`, "ok");
+        renderCategories();
+      });
+
+      pickerCategoriesList.appendChild(catCard);
+    });
+  } catch (err) {
+    pickerStatus.style.display = "block";
+    pickerStatus.textContent = "Lỗi tải kênh: " + err;
+    toast(err, "err");
+  }
 });
 
 // Chạm nền mờ để đóng modal

@@ -512,7 +512,13 @@ impl ReactorEngine {
                     }
                 }
 
-                let delay_secs = settings.delay.max(0.5);
+                let min_delay = settings.delay.max(0.5);
+                let delay_secs = match settings.delay_max {
+                    Some(max_d) if max_d > min_delay => {
+                        fastrand::f64() * (max_d - min_delay) + min_delay
+                    }
+                    _ => min_delay,
+                };
                 sleep(Duration::from_secs_f64(delay_secs)).await;
             }
         }

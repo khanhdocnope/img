@@ -81,10 +81,14 @@
         <div class="group">
           <div class="row">
             <div class="row-text">
-              <label for="cfg-delay">Độ trễ (giây)</label>
-              <small>Nên từ 1.0 trở lên để tránh bị giới hạn.</small>
+              <label>Độ trễ ngẫu nhiên (Jitter)</label>
+              <small>Khoảng giây nghỉ giữa các lần react (Min – Max).</small>
             </div>
-            <input type="number" id="cfg-delay" step="0.1" min="0.5" value="1.0" class="input input-num" inputmode="decimal">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <input type="number" id="cfg-delay" step="0.1" min="0.5" value="1.0" class="input input-num" style="width:70px;" inputmode="decimal" title="Tối thiểu">
+              <span class="text-muted">–</span>
+              <input type="number" id="cfg-delay-max" step="0.1" min="0.5" value="2.5" class="input input-num" style="width:70px;" inputmode="decimal" title="Tối đa">
+            </div>
           </div>
           <div class="row">
             <div class="row-text">
@@ -161,7 +165,10 @@
       <section id="tab-categories" class="screen">
         <div class="section-head">
           <h2>Danh mục</h2>
-          <button id="btn-open-add-cat" class="btn btn-sm btn-primary">Thêm</button>
+          <div class="head-actions">
+            <button id="btn-open-picker" class="btn btn-sm btn-primary">Chọn từ Server</button>
+            <button id="btn-open-add-cat" class="btn btn-sm btn-ghost">Thêm tay</button>
+          </div>
         </div>
         <p class="desc">Category cần quét và các kênh muốn bỏ qua.</p>
         <div id="categories-list" class="list"></div>
@@ -279,6 +286,32 @@
       <div class="sheet-actions">
         <button id="modal-cat-cancel" class="btn btn-ghost">Hủy</button>
         <button id="modal-cat-save" class="btn btn-primary">Lưu</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal chọn Category & Kênh trực quan từ Server -->
+  <div id="modal-channel-picker" class="modal-overlay hidden">
+    <div class="sheet sheet-tall" style="max-height:88dvh;">
+      <div class="sheet-grip"></div>
+      <div class="section-head" style="margin-bottom:0;">
+        <h3>Chọn từ Server</h3>
+        <button id="btn-refresh-servers" class="btn btn-sm btn-ghost" title="Tải lại danh sách">Làm mới</button>
+      </div>
+      <p class="desc" style="margin-top:-6px;">Chọn server để duyệt Category và các kênh text.</p>
+      
+      <div class="field">
+        <label for="picker-server-select">Server của bạn</label>
+        <select id="picker-server-select" class="input">
+          <option value="">-- Chọn Server --</option>
+        </select>
+      </div>
+
+      <div id="picker-status" class="desc" style="display:none; text-align:center; padding:12px;"></div>
+      <div id="picker-categories-list" class="list" style="max-height:48dvh; overflow-y:auto; gap:12px;"></div>
+
+      <div class="sheet-actions">
+        <button id="btn-close-channel-picker" class="btn btn-ghost btn-block">Đóng</button>
       </div>
     </div>
   </div>
