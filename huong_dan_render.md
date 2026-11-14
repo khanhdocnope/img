@@ -37,6 +37,23 @@ Nếu bạn muốn tự tạo Web Service:
 
 ---
 
+## ⚡ Cơ Chế Cập Nhật Code Mới (Render vs GitHub Actions)
+
+Khi bạn có commit mới trên GitHub:
+1. **GitHub Actions** sẽ mất khoảng **1 – 2 phút** để biên dịch mã nguồn Rust thành file chạy Linux siêu tối ưu và đăng lên GitHub Releases.
+2. Nếu Render bật chế độ **Auto-Deploy**, Render sẽ kích hoạt ngay giây thứ 0 (lúc này GitHub Actions chưa build xong).
+3. **Cách cập nhật chuẩn xác nhất**:
+   - **Cách 1 (Thủ công đơn giản)**: Đợi GitHub Actions hiển thị dấu tích xanh ✅ ở tab **Actions** trên GitHub (khoảng 1.5 phút). Sau đó trên Render Dashboard, bấm **Manual Deploy** ➔ **Deploy latest commit**. Quá trình tải binary mới nhất chỉ mất 10 giây!
+   - **Cách 2 (Tự động 100%)**:
+     - Vào Render Dashboard ➔ Service của bạn ➔ **Settings** ➔ Đổi **Auto-Deploy** thành **No**.
+     - Cuộn xuống phần **Deploy Hook**, sao chép link dạng `https://api.render.com/deploy/srv-xxx?key=yyy`.
+     - Vào GitHub Repository ➔ **Settings** ➔ **Secrets and variables** ➔ **Actions** ➔ **New repository secret**:
+       - Name: `RENDER_DEPLOY_HOOK`
+       - Value: Dán link Deploy Hook vừa copy.
+     - Từ đây về sau, mỗi khi GitHub Actions build xong xuôi, nó sẽ tự động kích hoạt Render kéo bản mới về chạy ngay lập tức!
+
+---
+
 ## 🔒 Lưu cấu hình vĩnh viễn (Tránh mất tài khoản khi Render khởi động lại)
 
 Render Free sử dụng bộ nhớ tạm (ephemeral filesystem). Khi container khởi động lại hoặc deploy mới, dữ liệu ổ đĩa sẽ được làm mới.

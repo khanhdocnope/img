@@ -103,6 +103,13 @@ impl ConfigManager {
         Ok(())
     }
 
+    pub fn import_config(&self, new_config: Config) -> Result<(), String> {
+        let mut cfg = self.config.write();
+        *cfg = new_config;
+        drop(cfg);
+        self.save_config()
+    }
+
     pub fn get_config(&self) -> Config {
         self.config.read().clone()
     }

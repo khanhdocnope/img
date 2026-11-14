@@ -29,6 +29,8 @@ class DiscordReactorEngine:
         self.running = False
         self.bot: Optional[commands.Bot] = None
         self.total_reacted_session = 0
+        self.blocked_channels = set()
+        self.clicked_buttons = set()
         self._stop_event = asyncio.Event()
 
     def log(self, msg: str):
@@ -85,6 +87,9 @@ class DiscordReactorEngine:
         if not self.running or self._stop_event.is_set():
             return 0
 
+        if getattr(channel, "id", None) in self.blocked_channels:
+            return 0
+
         key = str(channel.id)
         ch_progress = self.progress.get(key, {})
         last_id = ch_progress.get("last_reacted_id")
@@ -95,6 +100,9 @@ class DiscordReactorEngine:
         max_msgs = settings.get("max_messages_per_channel", None)
         skip_bots = settings.get("skip_bot_messages", True)
         delay = float(settings.get("delay", 1.0))
+        auto_button = settings.get("auto_button_enabled", False)
+        btn_label_kw = settings.get("button_label_keyword", "Đánh Boss")
+        btn_emoji_kw = settings.get("button_emoji_keyword", "⚔️")
 
         if full_scan:
             kwargs = {"limit": None}
@@ -113,6 +121,35 @@ class DiscordReactorEngine:
             async for message in channel.history(**kwargs):
                 if not self.running or self._stop_event.is_set():
                     break
+
+                # 1. Tự động click nút Boss trên tin nhắn bot
+                if auto_button:
+                    comps = getattr(message, "components", []) or []
+                    for comp in comps:
+                        children = getattr(comp, "children", []) or getattr(comp, "components", []) or [comp]
+                        for child in children:
+                            custom_id = getattr(child, "custom_id", None) or getattr(child, "id", "")
+                            click_key = f"{message.id}:{custom_id}"
+                            if click_key in self.clicked_buttons:
+                                continue
+
+                            label = getattr(child, "label", "") or ""
+                            emoji = getattr(child, "emoji", None)
+                            emoji_name = getattr(emoji, "name", "") if emoji else ""
+
+                            label_match = bool(btn_label_kw and (btn_label_kw.lower() in label.lower()))
+                            emoji_match = bool(btn_emoji_kw and (btn_emoji_kw in emoji_name))
+
+                            if label_match or emoji_match:
+                                self.clicked_buttons.add(click_key)
+                                click_fn = getattr(child, "click", None)
+                                if callable(click_fn):
+                                    try:
+                                        await click_fn()
+                                        self.log(f"  [⚔️ Đánh Boss] Đã bấm nút '{label or emoji_name}' tại #{channel.name}")
+                                        await asyncio.sleep(0.5)
+                                    except Exception as be:
+                                        self.log(f"  [⚔️ Đánh Boss] Lỗi nhấn nút: {be}")
 
                 if skip_bots and message.author.bot:
                     continue
@@ -138,7 +175,8 @@ class DiscordReactorEngine:
 
                     await asyncio.sleep(delay)
         except discord.Forbidden:
-            self.log(f"  [!] Không có quyền đọc: #{channel.name}")
+            self.blocked_channels.add(channel.id)
+            self.log(f"  [!] Không có quyền đọc: #{channel.name} (403), tự động bỏ qua kênh này.")
         except Exception as e:
             self.log(f"  [!] Lỗi kênh #{channel.name}: {e}")
 

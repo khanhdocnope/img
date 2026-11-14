@@ -22,6 +22,11 @@ fn get_config(state: State<'_, AppState>) -> Config {
 }
 
 #[tauri::command]
+fn import_config(config: Config, state: State<'_, AppState>) -> Result<(), String> {
+    state.config_mgr.import_config(config)
+}
+
+#[tauri::command]
 fn get_active_account(state: State<'_, AppState>) -> Option<Account> {
     state.config_mgr.get_active_account()
 }
@@ -170,6 +175,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
+            import_config,
             get_active_account,
             set_active_account,
             add_or_update_account,

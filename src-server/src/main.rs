@@ -80,6 +80,19 @@ async fn handle_invoke(
             let cfg = state.config_mgr.get_config();
             Ok(Json(serde_json::to_value(cfg).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?))
         }
+        "import_config" => {
+            let config_val = payload
+                .get("config")
+                .cloned()
+                .unwrap_or_else(|| payload.clone());
+            let new_cfg: models::Config = serde_json::from_value(config_val)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Config không hợp lệ: {}", e)))?;
+            state
+                .config_mgr
+                .import_config(new_cfg)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            Ok(Json(serde_json::Value::Null))
+        }
         "get_active_account" => {
             let acc = state.config_mgr.get_active_account();
             Ok(Json(serde_json::to_value(acc).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?))
@@ -341,6 +354,17 @@ async fn main() {
         .unwrap_or_else(|_| PathBuf::from("data"));
 
     let config_mgr = ConfigManager::new(data_dir);
+
+    // Nếu cấu hình chưa có tài khoản, tự động nạp từ biến môi trường BOT_CONFIG / DISCORD_REACTOR_CONFIG (nếu có trên Render)
+    if config_mgr.get_config().accounts.is_empty() {
+        if let Ok(env_cfg) = std::env::var("BOT_CONFIG").or_else(|_| std::env::var("DISCORD_REACTOR_CONFIG")) {
+            if let Ok(parsed) = serde_json::from_str::<models::Config>(&env_cfg) {
+                let _ = config_mgr.import_config(parsed);
+                println!("[Config] Đã nạp cấu hình tự động từ biến môi trường Render (BOT_CONFIG)");
+            }
+        }
+    }
+
     let engine = Arc::new(ReactorEngine::new());
     let log_history = Arc::new(RwLock::new(vec!["Discord Reactor Server đã khởi động...".to_string()]));
     let (log_tx, _) = broadcast::channel::<String>(512);

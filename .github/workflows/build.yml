@@ -62,6 +62,15 @@ jobs:
           files: dist/discord-reactor-server
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Kích hoạt Render Deploy tự động (nếu có cấu hình Deploy Hook)
+        env:
+          RENDER_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        if: ${{ env.RENDER_HOOK != '' }}
+        run: |
+          echo "Kích hoạt Render triển khai bản build mới..."
+          curl -fsSL -X POST "$RENDER_HOOK" || true
+          echo "Đã gửi tín hiệu deploy sang Render thành công."
+
   # ───────────────────────── Android APK ─────────────────────────
   build-apk:
     needs: [init-release]

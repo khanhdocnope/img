@@ -55,6 +55,14 @@
             <div class="log-line muted"><span class="ts">--:--:--</span><span>Sẵn sàng.</span></div>
           </div>
         </div>
+
+        <div id="dash-progress-section" class="progress-section hidden">
+          <div class="section-head">
+            <h2>Tiến trình từng kênh</h2>
+            <span id="dash-progress-count" class="muted" style="font-size: 12px;">0 kênh</span>
+          </div>
+          <div id="dash-progress-list" class="progress-list"></div>
+        </div>
       </section>
 
       <!-- ACCOUNTS -->
@@ -121,10 +129,48 @@
           </div>
           <div class="row">
             <div class="row-text">
+              <label for="cfg-resume-prog">Tiếp tục quét từ lần trước</label>
+              <small>Lưu vị trí tin nhắn cũ đã quét, tiếp tục quét tiếp chứ không quét lại từ đầu khi mở lại bot.</small>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfg-resume-prog" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="row">
+            <div class="row-text">
               <label for="cfg-max-msgs">Số tin tối đa mỗi kênh</label>
               <small>Để trống = Quét không giới hạn toàn bộ kênh.</small>
             </div>
             <input type="number" id="cfg-max-msgs" min="1" step="50" placeholder="Không giới hạn" class="input input-num" inputmode="numeric">
+          </div>
+        </div>
+
+        <div class="section-head sub-head"><h2>⚔️ Tự động Đánh Boss (Click nút)</h2></div>
+        <div class="group">
+          <div class="row">
+            <div class="row-text">
+              <label for="cfg-auto-button">Bật tự click nút Boss</label>
+              <small>Tự động bấm các nút tương tác (Buttons) trên tin nhắn bot game.</small>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfg-auto-button">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="row">
+            <div class="row-text">
+              <label for="cfg-btn-label">Từ khóa tên nút</label>
+              <small>Tìm nút có chữ này (ví dụ: Đánh Boss, Tấn công...).</small>
+            </div>
+            <input type="text" id="cfg-btn-label" class="input input-wide" value="Đánh Boss" placeholder="Đánh Boss">
+          </div>
+          <div class="row">
+            <div class="row-text">
+              <label for="cfg-btn-emoji">Emoji trên nút</label>
+              <small>Tìm nút có emoji này (ví dụ: ⚔️).</small>
+            </div>
+            <input type="text" id="cfg-btn-emoji" class="input input-num" value="⚔️" placeholder="⚔️" style="min-width: 80px; text-align: center;">
           </div>
         </div>
 
@@ -150,9 +196,15 @@
           <div class="row">
             <div class="row-text">
               <label for="cfg-es-interval">Chu kỳ (giây)</label>
-              <small>Khớp với slowmode của kênh.</small>
+              <small>Khớp với slowmode của kênh (kênh 60s chọn 60s).</small>
+              <div class="chip-group" id="es-chips">
+                <button type="button" class="chip" data-val="15">15s</button>
+                <button type="button" class="chip" data-val="30">30s</button>
+                <button type="button" class="chip active" data-val="60">60s</button>
+                <button type="button" class="chip" data-val="120">120s</button>
+              </div>
             </div>
-            <input type="number" id="cfg-es-interval" min="1" step="1" value="30" class="input input-num" inputmode="numeric">
+            <input type="number" id="cfg-es-interval" min="1" step="1" value="60" class="input input-num" inputmode="numeric">
           </div>
           <div class="row">
             <div class="row-text">
@@ -167,8 +219,23 @@
         </div>
 
         <button id="btn-save-settings" class="btn btn-primary btn-block btn-large">Lưu cài đặt</button>
-        <button id="btn-export-render-config" class="btn btn-secondary btn-block" style="margin-top: 10px;">📋 Sao chép cấu hình (cho Render / Cloud)</button>
-        <button id="btn-reset-prog" class="btn btn-ghost-danger btn-block">Đặt lại tiến trình quét</button>
+        <button id="btn-export-render-config" class="btn btn-secondary btn-block" style="margin-top: 10px;">📋 Sao chép cấu hình (cho Render ENV)</button>
+
+        <div class="section-head sub-head"><h2>💾 Sao lưu & Đồng bộ (LocalStorage)</h2></div>
+        <p class="desc">Trên Render Free, ổ đĩa sẽ bị đặt lại khi deploy bản mới. Trình duyệt này tự động lưu và khôi phục tài khoản / cài đặt mỗi khi mở web.</p>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; gap: 8px;">
+            <button id="btn-backup-local" class="btn btn-secondary btn-block" style="flex: 1;">💾 Lưu vào LocalStorage</button>
+            <button id="btn-restore-local" class="btn btn-secondary btn-block" style="flex: 1;">📥 Khôi phục từ LocalStorage</button>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button id="btn-export-json" class="btn btn-ghost btn-block" style="flex: 1;">📂 Xuất file .json</button>
+            <button id="btn-import-json-trigger" class="btn btn-ghost btn-block" style="flex: 1;">📥 Nhập file .json</button>
+            <input type="file" id="file-import-json" accept=".json,application/json" style="display: none;">
+          </div>
+        </div>
+
+        <button id="btn-reset-prog" class="btn btn-ghost-danger btn-block" style="margin-top: 10px;">Đặt lại tiến trình quét</button>
       </section>
 
       <!-- CATEGORIES -->

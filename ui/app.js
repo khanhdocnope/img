@@ -42,10 +42,50 @@ document.querySelectorAll(".nav-item").forEach(btn => {
   });
 });
 
-// 2. Tải cấu hình từ Rust backend
+// 2. Quản lý LocalStorage dự phòng cho Render / Web Cloud
+const LOCAL_STORAGE_KEY = "discord_reactor_config_backup";
+
+function saveConfigToLocalStorage(cfg) {
+  if (!cfg) return;
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cfg));
+  } catch (e) {
+    console.warn("Không thể lưu LocalStorage:", e);
+  }
+}
+
+function getLocalStoredConfig() {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Tải cấu hình từ Rust backend (tự khôi phục từ LocalStorage nếu server mới khởi động lại)
 async function loadConfig() {
   try {
     currentConfig = await invoke("get_config");
+
+    // Nếu server vừa restart/deploy mới và chưa có tài khoản nào, nhưng trình duyệt có lưu:
+    const serverHasAccounts = currentConfig && Array.isArray(currentConfig.accounts) && currentConfig.accounts.length > 0;
+    if (!serverHasAccounts) {
+      const localBackup = getLocalStoredConfig();
+      if (localBackup && Array.isArray(localBackup.accounts) && localBackup.accounts.length > 0) {
+        try {
+          await invoke("import_config", { config: localBackup });
+          currentConfig = localBackup;
+          toast("✨ Đã tự động khôi phục cấu hình từ LocalStorage trình duyệt!", "ok");
+        } catch (err) {
+          console.warn("Khôi phục cấu hình tự động thất bại:", err);
+        }
+      }
+    } else {
+      // Đã có tài khoản trên server -> Luôn đồng bộ dự phòng vào LocalStorage
+      saveConfigToLocalStorage(currentConfig);
+    }
+
     if (!currentConfig) return;
 
     // Settings
@@ -54,13 +94,21 @@ async function loadConfig() {
     document.getElementById("cfg-conc").value = currentConfig.bot_settings.concurrent_channels || 4;
     document.getElementById("cfg-skip-bots").checked = currentConfig.bot_settings.skip_bot_messages;
     document.getElementById("cfg-full-scan").checked = currentConfig.bot_settings.full_scan;
+    document.getElementById("cfg-resume-prog").checked = currentConfig.bot_settings.resume_progress !== false;
     document.getElementById("cfg-max-msgs").value = currentConfig.bot_settings.max_messages_per_channel || "";
+
+    // Tự động Đánh Boss
+    document.getElementById("cfg-auto-button").checked = !!currentConfig.bot_settings.auto_button_enabled;
+    document.getElementById("cfg-btn-label").value = currentConfig.bot_settings.button_label_keyword || "Đánh Boss";
+    document.getElementById("cfg-btn-emoji").value = currentConfig.bot_settings.button_emoji_keyword || "⚔️";
 
     // Gửi emoji tự động
     const es = currentConfig.emoji_sender || {};
     document.getElementById("cfg-es-enabled").checked = !!es.enabled;
     document.getElementById("cfg-es-channel").value = es.channel_id || "";
-    document.getElementById("cfg-es-interval").value = es.interval_secs || 30;
+    const intervalVal = es.interval_secs || 60;
+    document.getElementById("cfg-es-interval").value = intervalVal;
+    syncIntervalChips(intervalVal);
     document.getElementById("cfg-es-animated").checked = !!es.allow_animated;
 
 
@@ -316,6 +364,45 @@ function renderWorkers(workers) {
     .join("");
 }
 
+// Hiển thị tiến trình quét từng kênh
+function renderProgressList(list) {
+  const container = document.getElementById("dash-progress-section");
+  const listEl = document.getElementById("dash-progress-list");
+  const countEl = document.getElementById("dash-progress-count");
+  if (!container || !listEl) return;
+
+  if (!list || list.length === 0) {
+    container.classList.add("hidden");
+    return;
+  }
+
+  container.classList.remove("hidden");
+  if (countEl) countEl.textContent = `${list.length} kênh`;
+
+  listEl.innerHTML = list
+    .map((p) => {
+      const isDone = !!p.history_done;
+      const statusBadge = isDone
+        ? '<span class="progress-badge done">Hoàn thành</span>'
+        : '<span class="progress-badge scanning">Đang quét</span>';
+      const meta = [
+        `Đã thả ${p.total_reacted || 0} reactions`,
+        p.updated_at ? `Cập nhật lúc ${p.updated_at}` : ""
+      ]
+        .filter(Boolean)
+        .join(" • ");
+
+      return `<div class="progress-item">
+        <div class="progress-item-left">
+          <span class="progress-item-name">#${esc(p.channel_name || "kênh")}</span>
+          <span class="progress-item-meta">${esc(meta)}</span>
+        </div>
+        ${statusBadge}
+      </div>`;
+    })
+    .join("");
+}
+
 // 5. Cập nhật trạng thái Bot (Polling)
 async function updateStatus() {
   try {
@@ -333,6 +420,7 @@ async function updateStatus() {
     dashChannels.textContent = (currentStatus.total_channels_scanned || 0).toLocaleString("vi-VN");
 
     renderWorkers(currentStatus.workers || []);
+    renderProgressList(currentStatus.progress_list || []);
 
     const running = !!currentStatus.is_running;
     badge.textContent = running ? "Đang chạy" : "Đã dừng";
@@ -403,6 +491,25 @@ document.getElementById("btn-clear-log").addEventListener("click", async () => {
   logTerminal.innerHTML = '<div class="log-line muted"><span class="ts">--:--:--</span><span>Đã xóa nhật ký.</span></div>';
 });
 
+// Đồng bộ chips chọn nhanh chu kỳ gửi emoji
+function syncIntervalChips(val) {
+  document.querySelectorAll("#es-chips .chip").forEach((chip) => {
+    chip.classList.toggle("active", chip.dataset.val === String(val));
+  });
+}
+
+document.querySelectorAll("#es-chips .chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    const val = chip.dataset.val;
+    document.getElementById("cfg-es-interval").value = val;
+    syncIntervalChips(val);
+  });
+});
+
+document.getElementById("cfg-es-interval").addEventListener("input", (e) => {
+  syncIntervalChips(e.target.value);
+});
+
 // 8. Lưu Cài đặt & Bộ lọc
 document.getElementById("btn-save-settings").addEventListener("click", async () => {
   let delayMin = Math.max(0.05, parseFloat(document.getElementById("cfg-delay").value) || 0.3);
@@ -416,6 +523,10 @@ document.getElementById("btn-save-settings").addEventListener("click", async () 
     concurrent_channels: parseInt(document.getElementById("cfg-conc").value) || 4,
     skip_bot_messages: document.getElementById("cfg-skip-bots").checked,
     full_scan: document.getElementById("cfg-full-scan").checked,
+    resume_progress: document.getElementById("cfg-resume-prog").checked,
+    auto_button_enabled: document.getElementById("cfg-auto-button").checked,
+    button_label_keyword: document.getElementById("cfg-btn-label").value.trim(),
+    button_emoji_keyword: document.getElementById("cfg-btn-emoji").value.trim(),
     scan_history: false,
     max_messages_per_channel: maxMessages
   };
@@ -432,12 +543,78 @@ document.getElementById("btn-save-settings").addEventListener("click", async () 
   const sender = {
     enabled,
     channel_id: channelId,
-    interval_secs: Math.max(1, parseInt(document.getElementById("cfg-es-interval").value) || 30),
+    interval_secs: Math.max(1, parseInt(document.getElementById("cfg-es-interval").value) || 60),
     allow_animated: document.getElementById("cfg-es-animated").checked
   };
   await invoke("update_bot_settings", { settings });
   await invoke("update_emoji_sender", { settings: sender });
+  if (currentConfig) {
+    currentConfig.bot_settings = settings;
+    currentConfig.emoji_sender = sender;
+    saveConfigToLocalStorage(currentConfig);
+  }
   toast("Đã lưu cài đặt.");
+});
+
+// Sao lưu & Khôi phục (LocalStorage & File JSON)
+document.getElementById("btn-backup-local").addEventListener("click", () => {
+  if (!currentConfig) return;
+  saveConfigToLocalStorage(currentConfig);
+  toast("Đã sao lưu cấu hình vào LocalStorage trình duyệt!", "ok");
+});
+
+document.getElementById("btn-restore-local").addEventListener("click", async () => {
+  const local = getLocalStoredConfig();
+  if (!local || !local.accounts || local.accounts.length === 0) {
+    toast("Chưa có bản sao lưu hợp lệ trong LocalStorage!", "err");
+    return;
+  }
+  if (confirm(`Tìm thấy bản sao lưu gồm ${local.accounts.length} tài khoản. Khôi phục ngay?`)) {
+    try {
+      await invoke("import_config", { config: local });
+      await loadConfig();
+      toast("Đã khôi phục thành công từ LocalStorage!", "ok");
+    } catch (e) {
+      toast("Lỗi khôi phục: " + e, "err");
+    }
+  }
+});
+
+document.getElementById("btn-export-json").addEventListener("click", () => {
+  if (!currentConfig) return;
+  const jsonStr = JSON.stringify(currentConfig, null, 2);
+  const blob = new Blob([jsonStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `discord-reactor-config-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast("Đã tải file cấu hình .json về máy!", "ok");
+});
+
+const fileImportEl = document.getElementById("file-import-json");
+document.getElementById("btn-import-json-trigger").addEventListener("click", () => {
+  fileImportEl.value = "";
+  fileImportEl.click();
+});
+
+fileImportEl.addEventListener("change", (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async (evt) => {
+    try {
+      const parsed = JSON.parse(evt.target.result);
+      if (!parsed || typeof parsed !== "object") throw new Error("File không đúng định dạng JSON");
+      await invoke("import_config", { config: parsed });
+      await loadConfig();
+      toast("Đã nhập cấu hình từ file .json thành công!", "ok");
+    } catch (err) {
+      toast("Lỗi đọc file: " + err.message, "err");
+    }
+  };
+  reader.readAsText(file);
 });
 
 document.getElementById("btn-reset-prog").addEventListener("click", async () => {
@@ -616,7 +793,7 @@ if (btnExportRender) {
       const cfg = await invoke("get_config");
       const jsonStr = JSON.stringify(cfg, null, 2);
       await navigator.clipboard.writeText(jsonStr);
-      toast("Đã copy cấu hình JSON! Dán vào biến BOT_CONFIG trên Render.", "success");
+      toast("Đã copy cấu hình JSON! Dán vào biến BOT_CONFIG trên Render.", "ok");
     } catch (e) {
       toast("Không thể copy cấu hình: " + e, "err");
     }

@@ -69,6 +69,8 @@ struct WorkerCtx {
     cooldown_until_ms: AtomicU64,
     /// Các kênh không có quyền react: bỏ qua một thời gian thay vì gọi lại mỗi lượt
     blocked: Mutex<HashMap<u64, Instant>>,
+    /// Cache các nút đã click (dạng "message_id:custom_id") để không bấm lặp lại
+    clicked_buttons: Mutex<HashSet<String>>,
 }
 
 impl WorkerCtx {
@@ -114,7 +116,7 @@ impl WorkerCtx {
     fn channel_blocked(&self, channel_id: u64) -> bool {
         let mut map = self.blocked.lock();
         match map.get(&channel_id) {
-            Some(t) if t.elapsed() < Duration::from_secs(1800) => true,
+            Some(t) if t.elapsed() < Duration::from_secs(86400) => true,
             Some(_) => {
                 map.remove(&channel_id);
                 false
@@ -217,6 +219,8 @@ impl ReactorEngine {
                 .collect();
         }
 
+        let progress_list: Vec<ChannelProgress> = config_mgr.get_progress().into_values().collect();
+
         EngineStatus {
             is_running,
             session_reactions,
@@ -224,6 +228,7 @@ impl ReactorEngine {
             total_channels_scanned,
             active_account_name: names.join(" + "),
             workers,
+            progress_list,
         }
     }
 
@@ -284,6 +289,7 @@ impl ReactorEngine {
                 strikes: AtomicU32::new(0),
                 cooldown_until_ms: AtomicU64::new(0),
                 blocked: Mutex::new(HashMap::new()),
+                clicked_buttons: Mutex::new(HashSet::new()),
             });
 
             let start_delay = if idx == 0 { 0.0 } else { rand_between(20.0, 45.0) };
@@ -337,15 +343,17 @@ impl ReactorEngine {
             }
         }
 
-        // Chỉ tài khoản chính gửi emoji định kỳ (tránh gửi trùng từ hai tài khoản)
-        if idx == 0 {
-            tokio::spawn(Self::run_emoji_sender(
-                ctx.client.clone(),
-                ctx.config_mgr.clone(),
-                ctx.run.clone(),
-                ctx.on_log.clone(),
-            ));
-        }
+        // Mỗi tài khoản đang chạy đều gửi emoji định kỳ vào kênh được cài đặt
+        // Tài khoản thứ 2 trở đi sẽ bắt đầu trễ 15s để so le thời gian gửi giữa các tài khoản
+        let sender_delay = if idx == 0 { 0.0 } else { 15.0 };
+        tokio::spawn(Self::run_emoji_sender(
+            ctx.account_name.clone(),
+            ctx.client.clone(),
+            ctx.config_mgr.clone(),
+            ctx.run.clone(),
+            ctx.on_log.clone(),
+            sender_delay,
+        ));
 
         while ctx.alive() {
             // Tạm nghỉ khi bị rate limit kéo dài
@@ -449,15 +457,25 @@ impl ReactorEngine {
     /// Tự động gửi ngẫu nhiên (không lặp trong 10 tin gần nhất) emoji của server vào một kênh cố định.
     /// Đọc lại cấu hình ở mỗi vòng nên bật/tắt hoặc đổi kênh có hiệu lực ngay.
     async fn run_emoji_sender(
+        account_name: String,
         client: DiscordClient,
         config_mgr: ConfigManager,
         is_running: Arc<AtomicBool>,
         on_log: LogCallback,
+        initial_delay: f64,
     ) {
-        let log = |msg: String| {
-            let timestamp = Local::now().format("%H:%M:%S");
-            on_log(format!("[{}] {}", timestamp, msg));
+        let tag = format!("[Emoji: {}]", account_name);
+        let log = {
+            let tag = tag.clone();
+            move |msg: String| {
+                let timestamp = Local::now().format("%H:%M:%S");
+                on_log(format!("[{}] {} {}", timestamp, tag, msg));
+            }
         };
+
+        if initial_delay > 0.0 {
+            Self::sleep_while_running(initial_delay, &is_running).await;
+        }
 
         let mut cached_channel: Option<u64> = None;
         let mut cached_animated = false;
@@ -495,13 +513,13 @@ impl ReactorEngine {
                     Ok(ch) => match ch.guild_id {
                         Some(g) => g,
                         None => {
-                            log("[Emoji] Kênh này không thuộc server nào, không có emoji để gửi.".to_string());
+                            log("Kênh này không thuộc server nào, không có emoji để gửi.".to_string());
                             Self::sleep_while_running(30.0, &is_running).await;
                             continue;
                         }
                     },
                     Err(e) => {
-                        log(format!("[Emoji] {}", e));
+                        log(e);
                         Self::sleep_while_running(15.0, &is_running).await;
                         continue;
                     }
@@ -541,13 +559,13 @@ impl ReactorEngine {
                             }
                         }
                         log(format!(
-                            "[Emoji] Đã tải {} emoji {} của server.",
+                            "Đã tải {} emoji {} của server.",
                             emojis.len(),
                             if cfg.allow_animated { "(gồm cả động)" } else { "tĩnh" }
                         ));
                     }
                     Err(e) => {
-                        log(format!("[Emoji] {}", e));
+                        log(e);
                         Self::sleep_while_running(15.0, &is_running).await;
                         continue;
                     }
@@ -555,7 +573,7 @@ impl ReactorEngine {
             }
 
             if emojis.is_empty() {
-                log("[Emoji] Server không có emoji phù hợp. Thử lại sau 60s.".to_string());
+                log("Server không có emoji phù hợp. Thử lại sau 60s.".to_string());
                 Self::sleep_while_running(60.0, &is_running).await;
                 continue;
             }
@@ -575,20 +593,20 @@ impl ReactorEngine {
                     recent.push_front(emoji.clone());
                     recent.truncate(RECENT_LIMIT);
                     sent_total += 1;
-                    log(format!("[Emoji] Đã gửi {} (tổng: {})", emoji, sent_total));
+                    log(format!("Đã gửi {} (tổng: {})", emoji, sent_total));
                     // Cộng thêm 0–1,5s ngẫu nhiên để không đúng mép slowmode
                     Self::sleep_while_running(cfg.interval_secs.max(1) as f64 + rand_between(0.0, 1.5), &is_running).await;
                 }
                 Ok(SendOutcome::RateLimited(secs)) => {
-                    log(format!("[Emoji] Kênh đang giới hạn tốc độ, chờ {:.0}s...", secs + 0.5));
+                    log(format!("Kênh đang giới hạn tốc độ, chờ {:.0}s...", secs + 0.5));
                     Self::sleep_while_running(secs + 0.5, &is_running).await;
                 }
                 Ok(SendOutcome::Forbidden) => {
-                    log("[Emoji] [!] Không có quyền gửi tin nhắn vào kênh này. Thử lại sau 60s.".to_string());
+                    log("[!] Không có quyền gửi tin nhắn vào kênh này. Thử lại sau 60s.".to_string());
                     Self::sleep_while_running(60.0, &is_running).await;
                 }
                 Err(e) => {
-                    log(format!("[Emoji] [!] {}", e));
+                    log(format!("[!] {}", e));
                     let wait = if e.starts_with("NET:") { 10.0 } else { 30.0 };
                     Self::sleep_while_running(wait, &is_running).await;
                 }
@@ -672,6 +690,77 @@ impl ReactorEngine {
                 break;
             }
 
+            // 1. Tự động click nút (Đánh Boss ⚔️) trên tin nhắn (kể cả tin nhắn của Bot)
+            if settings.auto_button_enabled && (!msg.components.is_empty() || msg.author.bot) {
+                for comp in &msg.components {
+                    let buttons: Vec<&crate::models::MessageComponent> = if comp.component_type == 1 {
+                        comp.components.iter().collect()
+                    } else if comp.component_type == 2 {
+                        vec![comp]
+                    } else {
+                        Vec::new()
+                    };
+
+                    for btn in buttons {
+                        if btn.disabled.unwrap_or(false) {
+                            continue;
+                        }
+                        let custom_id = match &btn.custom_id {
+                            Some(id) if !id.is_empty() => id,
+                            _ => continue,
+                        };
+
+                        let click_key = format!("{}:{}", msg.id, custom_id);
+                        {
+                            let mut clicked = ctx.clicked_buttons.lock();
+                            if clicked.contains(&click_key) {
+                                continue;
+                            }
+                            clicked.insert(click_key);
+                        }
+
+                        let label = btn.label.as_deref().unwrap_or("");
+                        let emoji_name = btn.emoji.as_ref().and_then(|e| e.name.as_deref()).unwrap_or("");
+
+                        let label_match = !settings.button_label_keyword.is_empty()
+                            && label.to_lowercase().contains(&settings.button_label_keyword.to_lowercase());
+                        let emoji_match = !settings.button_emoji_keyword.is_empty()
+                            && emoji_name.contains(&settings.button_emoji_keyword);
+
+                        if label_match || emoji_match {
+                            let app_id = msg.application_id.as_deref().unwrap_or(&msg.author.id);
+                            let guild_id = msg.guild_id.as_deref();
+
+                            ctx.log(format!(
+                                "[⚔️ Đánh Boss] Phát hiện nút \"{}\" tại #{}, đang bấm...",
+                                if !label.is_empty() { label } else { emoji_name },
+                                channel_name
+                            ));
+
+                            match ctx
+                                .client
+                                .click_button(guild_id, channel_id, &msg.id, app_id, custom_id)
+                                .await
+                            {
+                                Ok(true) => {
+                                    ctx.log(format!(
+                                        "[⚔️ Đánh Boss] ✅ Đã đánh thành công tại #{} (tin {})",
+                                        channel_name, msg.id
+                                    ));
+                                }
+                                Ok(false) => {}
+                                Err(err) => {
+                                    ctx.log(format!("[⚔️ Đánh Boss] ❌ Lỗi bấm nút: {}", err));
+                                }
+                            }
+
+                            sleep(Duration::from_millis(500)).await;
+                        }
+                    }
+                }
+            }
+
+            // 2. Thả reaction cho tin nhắn
             if settings.skip_bot_messages && msg.author.bot {
                 continue;
             }
@@ -779,7 +868,12 @@ impl ReactorEngine {
 
         if settings.full_scan {
             // ── QUÉT TOÀN BỘ LỊCH SỬ KÊNH (Duyệt liên tục qua các trang 100 tin, không bị chặn) ──
-            let mut before_cursor: Option<u64> = None;
+            // Nếu bật resume_progress và chưa quét xong lịch sử, tiếp tục từ history_cursor đã lưu
+            let mut before_cursor: Option<u64> = if settings.resume_progress && !ch_progress.history_done {
+                ch_progress.history_cursor.as_deref().and_then(|s| s.parse::<u64>().ok())
+            } else {
+                None
+            };
 
             loop {
                 if !ctx.alive() || ctx.cooldown_left() > 0.0 {
@@ -814,6 +908,12 @@ impl ReactorEngine {
                 };
 
                 if page.is_empty() {
+                    // Đã quét hết toàn bộ tin nhắn tới đầu kênh -> Lưu hoàn thành
+                    ctx.config_mgr.update_channel_progress(&key, channel_name, |p| {
+                        p.history_done = true;
+                        p.history_cursor = None;
+                        p.updated_at = Some(Local::now().format("%H:%M:%S").to_string());
+                    });
                     break;
                 }
 
@@ -831,12 +931,30 @@ impl ReactorEngine {
 
                 total_channel_reacted += reacted;
 
+                // Lưu tiến trình LẬP TỨC sau mỗi trang 100 tin đã duyệt
+                let reached_start = page_len < fetch_limit;
+                let oldest_str = oldest_id.map(|o| o.to_string());
+                let newest_str = newest_msg_id.clone();
+                ctx.config_mgr.update_channel_progress(&key, channel_name, |p| {
+                    p.total_reacted += reacted;
+                    if let Some(ref id) = newest_str {
+                        p.last_reacted_id = Some(id.clone());
+                    }
+                    if reached_start {
+                        p.history_done = true;
+                        p.history_cursor = None;
+                    } else if let Some(ref o) = oldest_str {
+                        p.history_cursor = Some(o.clone());
+                    }
+                    p.updated_at = Some(Local::now().format("%H:%M:%S").to_string());
+                });
+
                 if had_error || !ctx.alive() || ctx.cooldown_left() > 0.0 {
                     break;
                 }
 
                 // Nếu trang trả về ít hơn số lượng yêu cầu -> Đã đến tin đầu tiên của kênh
-                if page_len < fetch_limit {
+                if reached_start {
                     break;
                 }
 
@@ -872,6 +990,15 @@ impl ReactorEngine {
                 let (reacted, _, _) =
                     Self::react_messages(ctx, channel_id, channel_name, page, &settings, &config).await;
                 total_channel_reacted += reacted;
+
+                let newest_str = newest_msg_id.clone();
+                ctx.config_mgr.update_channel_progress(&key, channel_name, |p| {
+                    p.total_reacted += reacted;
+                    if let Some(ref id) = newest_str {
+                        p.last_reacted_id = Some(id.clone());
+                    }
+                    p.updated_at = Some(Local::now().format("%H:%M:%S").to_string());
+                });
             }
         }
 

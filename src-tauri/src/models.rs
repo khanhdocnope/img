@@ -66,6 +66,30 @@ pub struct BotSettings {
     /// Quét ngược toàn bộ lịch sử kênh (từng trang 100 tin) để react mọi tin đã có reaction
     #[serde(default)]
     pub scan_history: bool,
+    /// Tự động bấm nút (Auto Click Button / Đánh Boss ⚔️)
+    #[serde(default = "default_true")]
+    pub auto_button_enabled: bool,
+    /// Từ khóa trong nhãn nút (mặc định: "Đánh Boss")
+    #[serde(default = "default_button_label")]
+    pub button_label_keyword: String,
+    /// Từ khóa emoji của nút (mặc định: "⚔️")
+    #[serde(default = "default_button_emoji")]
+    pub button_emoji_keyword: String,
+    /// Tiếp tục tiến trình quét cũ từ lần trước (Resume)
+    #[serde(default = "default_true")]
+    pub resume_progress: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_button_label() -> String {
+    "Đánh Boss".to_string()
+}
+
+fn default_button_emoji() -> String {
+    "⚔️".to_string()
 }
 
 fn default_delay() -> f64 {
@@ -86,6 +110,10 @@ impl Default for BotSettings {
             full_scan: true,
             concurrent_channels: 4,
             scan_history: false,
+            auto_button_enabled: default_true(),
+            button_label_keyword: default_button_label(),
+            button_emoji_keyword: default_button_emoji(),
+            resume_progress: default_true(),
         }
     }
 }
@@ -197,6 +225,9 @@ pub struct ChannelProgress {
     /// Đã quét tới tin đầu tiên của kênh
     #[serde(default)]
     pub history_done: bool,
+    /// Thời gian cập nhật gần nhất
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 pub type ProgressMap = HashMap<String, ChannelProgress>;
@@ -220,6 +251,8 @@ pub struct EngineStatus {
     pub total_channels_scanned: usize,
     pub active_account_name: String,
     pub workers: Vec<WorkerStatus>,
+    #[serde(default)]
+    pub progress_list: Vec<ChannelProgress>,
 }
 
 // --- Discord API Payloads ---
@@ -272,14 +305,40 @@ pub struct DiscordReactionItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageComponent {
+    #[serde(rename = "type")]
+    pub component_type: u8,
+    #[serde(default)]
+    pub custom_id: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub style: Option<u8>,
+    #[serde(default)]
+    pub emoji: Option<DiscordEmoji>,
+    #[serde(default)]
+    pub disabled: Option<bool>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub components: Vec<MessageComponent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordMessage {
     pub id: String,
     pub channel_id: String,
+    #[serde(default)]
+    pub guild_id: Option<String>,
     pub author: DiscordUser,
     #[serde(default)]
     pub content: String,
     #[serde(default)]
     pub reactions: Vec<DiscordReactionItem>,
+    #[serde(default)]
+    pub components: Vec<MessageComponent>,
+    #[serde(default)]
+    pub application_id: Option<String>,
 }
 
 /// Kết quả kiểm tra một Discord token

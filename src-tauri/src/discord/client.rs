@@ -421,4 +421,66 @@ impl DiscordClient {
             return Err(format!("Lỗi HTTP {}: {}", status, snippet));
         }
     }
+
+    /// Nhấn một nút tương tác (Message Component Button - type 2, ví dụ nút "Đánh Boss" ⚔️)
+    pub async fn click_button(
+        &self,
+        guild_id: Option<&str>,
+        channel_id: u64,
+        message_id: &str,
+        application_id: &str,
+        custom_id: &str,
+    ) -> Result<bool, String> {
+        let url = format!("{}/interactions", BASE_URL);
+        let session_id = uuid::Uuid::new_v4().simple().to_string();
+
+        let mut payload = serde_json::json!({
+            "type": 3, // MESSAGE_COMPONENT
+            "application_id": application_id,
+            "channel_id": channel_id.to_string(),
+            "message_flags": 0,
+            "message_id": message_id,
+            "session_id": session_id,
+            "data": {
+                "component_type": 2, // BUTTON
+                "custom_id": custom_id
+            }
+        });
+
+        if let Some(gid) = guild_id {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("guild_id".to_string(), serde_json::Value::String(gid.to_string()));
+            }
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("NET: Lỗi gửi tương tác click_button: {}", e))?;
+
+        let status = resp.status();
+        if status.is_success() || status == reqwest::StatusCode::NO_CONTENT {
+            return Ok(true);
+        }
+
+        self.note(status);
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = resp
+                .json::<RateLimitResponse>()
+                .await
+                .ok()
+                .and_then(|r| r.retry_after)
+                .unwrap_or(2.0);
+            tokio::time::sleep(Duration::from_secs_f64(retry_after + 0.3)).await;
+            return Err("RATE: Giới hạn tốc độ bấm nút".to_string());
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(80).collect();
+        Err(format!("Lỗi HTTP {} khi bấm nút: {}", status, snippet))
+    }
 }
