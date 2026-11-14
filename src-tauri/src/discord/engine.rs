@@ -1,7 +1,7 @@
 use crate::config::ConfigManager;
 use crate::discord::client::{DiscordClient, InvalidMeter, SendOutcome};
 use crate::models::{
-    Account, BotSettings, CategoryConfig, ChannelProgress, Config, DiscordMessage, EngineStatus, WorkerStatus,
+    Account, BotSettings, CategoryConfig, Config, DiscordMessage, EngineStatus, WorkerStatus,
 };
 use chrono::Local;
 use parking_lot::{Mutex, RwLock};
@@ -41,7 +41,6 @@ fn rand_between(min: f64, max: f64) -> f64 {
     }
 }
 
-#[derive(Clone)]
 /// Bối cảnh riêng của một tài khoản đang chạy (mỗi tài khoản có client, nhịp và bộ bảo vệ riêng)
 struct WorkerCtx {
     client: DiscordClient,
