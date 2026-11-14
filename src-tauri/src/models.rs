@@ -68,14 +68,18 @@ pub struct BotSettings {
     pub scan_history: bool,
 }
 
+fn default_delay() -> f64 {
+    0.3
+}
+
 fn default_delay_max() -> f64 {
-    1.5
+    0.6
 }
 
 impl Default for BotSettings {
     fn default() -> Self {
         Self {
-            delay: 1.0,
+            delay: default_delay(),
             delay_max: default_delay_max(),
             max_messages_per_channel: None,
             skip_bot_messages: true,

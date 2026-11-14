@@ -279,8 +279,8 @@ impl ReactorEngine {
                 my_reactions: reactions,
                 on_log: on_log.clone(),
                 meter: self.meter.clone(),
-                speed: rand_between(0.9, 1.3),
-                min_delay: if multi { 0.8 } else { 0.5 },
+                speed: 1.0,
+                min_delay: 0.05,
                 strikes: AtomicU32::new(0),
                 cooldown_until_ms: AtomicU64::new(0),
                 blocked: Mutex::new(HashMap::new()),
@@ -740,10 +740,11 @@ impl ReactorEngine {
                     }
                 }
 
-                // Tick ngẫu nhiên trong [delay, delay_max], nhân hệ số tốc độ riêng của tài khoản
-                let lo = settings.delay.max(ctx.min_delay);
-                let hi = settings.delay_max.max(lo);
-                sleep(Duration::from_secs_f64(rand_between(lo, hi) * ctx.speed)).await;
+                // Tick ngẫu nhiên trong [delay, delay_max]
+                let lo = settings.delay.max(0.05);
+                let hi = if settings.delay_max > lo { settings.delay_max } else { lo };
+                let wait_time = if hi > lo { rand_between(lo, hi) } else { lo };
+                sleep(Duration::from_secs_f64(wait_time)).await;
             }
         }
 
@@ -770,93 +771,126 @@ impl ReactorEngine {
 
         let config = ctx.config_mgr.get_config();
         let settings = config.bot_settings.clone();
-        let limit = if settings.full_scan {
-            100
-        } else {
-            settings.max_messages_per_channel.unwrap_or(100)
-        };
-        let after = if settings.full_scan { None } else { last_id };
 
-        // ── Giai đoạn 1: tin mới nhất ──
-        let messages = match ctx.client.get_messages(channel_id, limit, after).await {
-            Ok(msgs) => msgs,
-            Err(err) => {
-                if err.starts_with("AUTH:") {
-                    ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
-                } else if err.starts_with("RATE:") {
-                    let secs = ctx.strike();
-                    ctx.log(format!("[!] #{}: bị giới hạn tốc độ, nghỉ {}s.", channel_name, secs));
-                } else {
-                    ctx.log(format!("#{}: {}", channel_name, err));
+        let mut total_channel_reacted = 0u64;
+        let mut newest_msg_id: Option<String> = None;
+        let mut total_messages_scanned = 0u32;
+        let max_msgs = settings.max_messages_per_channel;
+
+        if settings.full_scan {
+            // ── QUÉT TOÀN BỘ LỊCH SỬ KÊNH (Duyệt liên tục qua các trang 100 tin, không bị chặn) ──
+            let mut before_cursor: Option<u64> = None;
+
+            loop {
+                if !ctx.alive() || ctx.cooldown_left() > 0.0 {
+                    break;
                 }
-                return 0;
+
+                let fetch_limit = if let Some(max) = max_msgs {
+                    if total_messages_scanned >= max {
+                        break;
+                    }
+                    (max - total_messages_scanned).min(100)
+                } else {
+                    100
+                };
+
+                let page = match ctx.client.get_messages_before(channel_id, fetch_limit, before_cursor).await {
+                    Ok(msgs) => msgs,
+                    Err(err) => {
+                        if err.contains("403") || err.contains("Forbidden") {
+                            ctx.block_channel(channel_id);
+                            ctx.log(format!("[!] #{}: không có quyền truy cập (403), tự động bỏ qua kênh này.", channel_name));
+                        } else if err.starts_with("AUTH:") {
+                            ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
+                        } else if err.starts_with("RATE:") {
+                            let secs = ctx.strike();
+                            ctx.log(format!("[!] #{}: bị giới hạn tốc độ khi đọc tin nhắn, nghỉ {}s.", channel_name, secs));
+                        } else {
+                            ctx.log(format!("#{}: {}", channel_name, err));
+                        }
+                        break;
+                    }
+                };
+
+                if page.is_empty() {
+                    break;
+                }
+
+                let page_len = page.len() as u32;
+                total_messages_scanned += page_len;
+
+                if newest_msg_id.is_none() {
+                    newest_msg_id = page.first().map(|m| m.id.clone());
+                }
+
+                let oldest_id = page.last().and_then(|m| m.id.parse::<u64>().ok());
+
+                let (reacted, _, had_error) =
+                    Self::react_messages(ctx, channel_id, channel_name, page, &settings, &config).await;
+
+                total_channel_reacted += reacted;
+
+                if had_error || !ctx.alive() || ctx.cooldown_left() > 0.0 {
+                    break;
+                }
+
+                // Nếu trang trả về ít hơn số lượng yêu cầu -> Đã đến tin đầu tiên của kênh
+                if page_len < fetch_limit {
+                    break;
+                }
+
+                if let Some(oldest) = oldest_id {
+                    before_cursor = Some(oldest);
+                } else {
+                    break;
+                }
             }
-        };
+        } else {
+            // ── CHẾ ĐỘ QUÉT TIN MỚI (chỉ lấy tin nhắn sau last_reacted_id) ──
+            let fetch_limit = max_msgs.unwrap_or(100).min(100);
+            let page = match ctx.client.get_messages(channel_id, fetch_limit, last_id).await {
+                Ok(msgs) => msgs,
+                Err(err) => {
+                    if err.contains("403") || err.contains("Forbidden") {
+                        ctx.block_channel(channel_id);
+                        ctx.log(format!("[!] #{}: không có quyền truy cập (403), tự động bỏ qua kênh này.", channel_name));
+                    } else if err.starts_with("AUTH:") {
+                        ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
+                    } else if err.starts_with("RATE:") {
+                        let secs = ctx.strike();
+                        ctx.log(format!("[!] #{}: bị giới hạn tốc độ khi đọc tin nhắn, nghỉ {}s.", channel_name, secs));
+                    } else {
+                        ctx.log(format!("#{}: {}", channel_name, err));
+                    }
+                    return 0;
+                }
+            };
 
-        let (mut new_reacted, last_message_id, had_error) =
-            Self::react_messages(ctx, channel_id, channel_name, messages, &settings, &config).await;
+            if !page.is_empty() {
+                newest_msg_id = page.first().map(|m| m.id.clone());
+                let (reacted, _, _) =
+                    Self::react_messages(ctx, channel_id, channel_name, page, &settings, &config).await;
+                total_channel_reacted += reacted;
+            }
+        }
 
-        if new_reacted > 0 || (!had_error && last_message_id.is_some()) {
-            let n = new_reacted;
+        if total_channel_reacted > 0 || newest_msg_id.is_some() {
+            let n = total_channel_reacted;
+            let newest = newest_msg_id;
             ctx.config_mgr.update_channel_progress(&key, channel_name, |p| {
                 p.total_reacted += n;
-                if !had_error {
-                    if let Some(id) = last_message_id {
-                        p.last_reacted_id = Some(id);
-                    }
+                if let Some(id) = newest {
+                    p.last_reacted_id = Some(id);
                 }
             });
         }
 
-        // ── Giai đoạn 2: quét ngược lịch sử, mỗi lượt một trang 100 tin cũ hơn ──
-        if settings.scan_history && !ch_progress.history_done && ctx.alive() && ctx.cooldown_left() <= 0.0 {
-            const PAGE: u32 = 100;
-            let before = ch_progress.history_cursor.as_deref().and_then(|s| s.parse::<u64>().ok());
-
-            match ctx.client.get_messages_before(channel_id, PAGE, before).await {
-                Ok(page) => {
-                    let page_len = page.len();
-                    let oldest = page.iter().filter_map(|m| m.id.parse::<u64>().ok()).min();
-
-                    let (n, _, err) =
-                        Self::react_messages(ctx, channel_id, channel_name, page, &settings, &config).await;
-                    new_reacted += n;
-
-                    // Chỉ tiến tiếp khi trang này xử lý xong trọn vẹn (không bị dừng/lỗi tạm thời)
-                    let completed = !err && ctx.alive();
-                    let reached_start = page_len < PAGE as usize || oldest.is_none();
-
-                    ctx.config_mgr.update_channel_progress(&key, channel_name, |p| {
-                        p.total_reacted += n;
-                        if completed {
-                            if reached_start {
-                                p.history_done = true;
-                            } else if let Some(o) = oldest {
-                                p.history_cursor = Some(o.to_string());
-                            }
-                        }
-                    });
-
-                    if completed && reached_start {
-                        ctx.log(format!("[Lịch sử] #{}: đã quét xong toàn bộ lịch sử kênh.", channel_name));
-                    }
-                }
-                Err(err) => {
-                    if err.starts_with("AUTH:") {
-                        ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
-                    } else if err.starts_with("RATE:") {
-                        ctx.strike();
-                    }
-                    ctx.log(format!("[Lịch sử] #{}: {}", channel_name, err));
-                }
-            }
-        }
-
-        if new_reacted > 0 {
+        if total_channel_reacted > 0 {
             ctx.config_mgr.save_stats();
         }
 
-        new_reacted
+        total_channel_reacted
     }
 
     fn is_emoji_allowed(emoji: &str, whitelist: &[String], blacklist: &[String]) -> bool {

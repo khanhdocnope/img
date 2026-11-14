@@ -49,12 +49,12 @@ async function loadConfig() {
     if (!currentConfig) return;
 
     // Settings
-    document.getElementById("cfg-delay").value = currentConfig.bot_settings.delay || 1.0;
-    document.getElementById("cfg-delay-max").value = currentConfig.bot_settings.delay_max || 1.5;
+    document.getElementById("cfg-delay").value = currentConfig.bot_settings.delay !== undefined ? currentConfig.bot_settings.delay : 0.3;
+    document.getElementById("cfg-delay-max").value = currentConfig.bot_settings.delay_max !== undefined ? currentConfig.bot_settings.delay_max : 0.6;
     document.getElementById("cfg-conc").value = currentConfig.bot_settings.concurrent_channels || 4;
     document.getElementById("cfg-skip-bots").checked = currentConfig.bot_settings.skip_bot_messages;
     document.getElementById("cfg-full-scan").checked = currentConfig.bot_settings.full_scan;
-    document.getElementById("cfg-scan-history").checked = !!currentConfig.bot_settings.scan_history;
+    document.getElementById("cfg-max-msgs").value = currentConfig.bot_settings.max_messages_per_channel || "";
 
     // Gửi emoji tự động
     const es = currentConfig.emoji_sender || {};
@@ -405,17 +405,19 @@ document.getElementById("btn-clear-log").addEventListener("click", async () => {
 
 // 8. Lưu Cài đặt & Bộ lọc
 document.getElementById("btn-save-settings").addEventListener("click", async () => {
-  let delayMin = Math.max(0.5, parseFloat(document.getElementById("cfg-delay").value) || 1.0);
-  let delayMax = Math.max(0.5, parseFloat(document.getElementById("cfg-delay-max").value) || delayMin);
+  let delayMin = Math.max(0.05, parseFloat(document.getElementById("cfg-delay").value) || 0.3);
+  let delayMax = Math.max(0.05, parseFloat(document.getElementById("cfg-delay-max").value) || delayMin);
   if (delayMax < delayMin) [delayMin, delayMax] = [delayMax, delayMin];
+  const maxMsgsVal = document.getElementById("cfg-max-msgs").value.trim();
+  const maxMessages = maxMsgsVal ? parseInt(maxMsgsVal) : null;
   const settings = {
     delay: delayMin,
     delay_max: delayMax,
     concurrent_channels: parseInt(document.getElementById("cfg-conc").value) || 4,
     skip_bot_messages: document.getElementById("cfg-skip-bots").checked,
     full_scan: document.getElementById("cfg-full-scan").checked,
-    scan_history: document.getElementById("cfg-scan-history").checked,
-    max_messages_per_channel: null
+    scan_history: false,
+    max_messages_per_channel: maxMessages
   };
   const channelId = document.getElementById("cfg-es-channel").value.trim();
   const enabled = document.getElementById("cfg-es-enabled").checked;
