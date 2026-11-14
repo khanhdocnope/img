@@ -1,7 +1,10 @@
-use crate::models::{DiscordChannel, DiscordGuild, DiscordMessage, DiscordUser, GuildEmoji};
+use crate::models::{DiscordChannel, DiscordMessage, DiscordUser, GuildEmoji, TokenCheck};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
+use parking_lot::Mutex;
 use serde::Deserialize;
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 const BASE_URL: &str = "https://discord.com/api/v10";
@@ -13,6 +16,41 @@ struct RateLimitResponse {
     #[allow(dead_code)]
     pub message: Option<String>,
     pub retry_after: Option<f64>,
+}
+
+/// Đếm các phản hồi lỗi 401/403/429 trong 10 phút gần nhất (chung cho mọi tài khoản).
+/// Discord/Cloudflare chặn IP tạm thời khi có quá nhiều phản hồi loại này, nên engine
+/// dùng bộ đếm này để chủ động tạm nghỉ trước khi bị chặn.
+#[derive(Default)]
+pub struct InvalidMeter {
+    hits: Mutex<VecDeque<Instant>>,
+}
+
+impl InvalidMeter {
+    const WINDOW: Duration = Duration::from_secs(600);
+
+    fn prune(hits: &mut VecDeque<Instant>, now: Instant) {
+        while let Some(first) = hits.front() {
+            if now.saturating_duration_since(*first) > Self::WINDOW {
+                hits.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn record(&self) {
+        let now = Instant::now();
+        let mut hits = self.hits.lock();
+        hits.push_back(now);
+        Self::prune(&mut hits, now);
+    }
+
+    pub fn recent(&self) -> usize {
+        let mut hits = self.hits.lock();
+        Self::prune(&mut hits, Instant::now());
+        hits.len()
+    }
 }
 
 /// Kết quả gửi tin nhắn
@@ -29,6 +67,7 @@ pub enum SendOutcome {
 pub struct DiscordClient {
     client: reqwest::Client,
     token: String,
+    meter: Option<Arc<InvalidMeter>>,
 }
 
 impl DiscordClient {
@@ -54,11 +93,73 @@ impl DiscordClient {
             .build()
             .map_err(|e| format!("Không thể khởi tạo HTTP Client: {}", e))?;
 
-        Ok(Self { client, token })
+        Ok(Self { client, token, meter: None })
+    }
+
+    /// Gắn bộ đếm phản hồi lỗi dùng chung giữa các tài khoản
+    pub fn with_meter(mut self, meter: Arc<InvalidMeter>) -> Self {
+        self.meter = Some(meter);
+        self
+    }
+
+    /// Ghi nhận phản hồi 401/403/429 vào bộ đếm
+    fn note(&self, status: reqwest::StatusCode) {
+        if let Some(m) = &self.meter {
+            if matches!(status.as_u16(), 401 | 403 | 429) {
+                m.record();
+            }
+        }
+    }
+
+    /// Chuỗi lỗi có tiền tố để engine phân loại: AUTH (token bị từ chối), RATE (bị giới hạn tốc độ)
+    fn http_err(status: reqwest::StatusCode, what: &str) -> String {
+        match status.as_u16() {
+            401 => format!("AUTH: Token bị Discord từ chối (401) {}", what),
+            429 => format!("RATE: Bị giới hạn tốc độ (429) {}", what),
+            _ => format!("Lỗi HTTP {} {}", status, what),
+        }
     }
 
     pub fn get_token(&self) -> &str {
         &self.token
+    }
+
+    /// Kiểm tra token còn dùng được không (gọi GET /users/@me), không bao giờ trả Err
+    pub async fn check_token(token: &str) -> TokenCheck {
+        let make = |status: &str, username: Option<String>, message: &str| TokenCheck {
+            status: status.to_string(),
+            username,
+            message: message.to_string(),
+        };
+
+        let client = match DiscordClient::new(token.trim().to_string()) {
+            Ok(c) => c,
+            Err(_) => return make("invalid", None, "Token chứa ký tự không hợp lệ."),
+        };
+
+        let url = format!("{}/users/@me", BASE_URL);
+        let resp = match client.client.get(&url).send().await {
+            Ok(r) => r,
+            Err(_) => return make("unknown", None, "Không kết nối được tới Discord. Kiểm tra mạng."),
+        };
+
+        let status = resp.status();
+        if status.is_success() {
+            return match resp.json::<DiscordUser>().await {
+                Ok(u) => {
+                    let name = u.global_name.filter(|n| !n.is_empty()).unwrap_or(u.username);
+                    make("valid", Some(name), "Token còn hoạt động.")
+                }
+                Err(_) => make("unknown", None, "Discord trả về dữ liệu không đọc được."),
+            };
+        }
+
+        match status.as_u16() {
+            401 => make("invalid", None, "Token đã hết hạn hoặc tài khoản đã đăng xuất."),
+            403 => make("invalid", None, "Tài khoản bị khóa hoặc cần xác minh."),
+            429 => make("unknown", None, "Đang bị giới hạn tốc độ, hãy thử lại sau ít phút."),
+            code => make("unknown", None, &format!("Discord trả về lỗi HTTP {}.", code)),
+        }
     }
 
     /// Kiểm tra token và lấy thông tin tài khoản hiện tại
@@ -82,25 +183,6 @@ impl DiscordClient {
             .map_err(|e| format!("Không thể parse thông tin tài khoản: {}", e))
     }
 
-    /// Lấy danh sách server mà tài khoản đang tham gia
-    pub async fn get_user_guilds(&self) -> Result<Vec<DiscordGuild>, String> {
-        let url = format!("{}/users/@me/guilds", BASE_URL);
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("NET: Lỗi kết nối get_user_guilds: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("Lỗi HTTP {} khi lấy danh sách server", resp.status()));
-        }
-
-        resp.json::<Vec<DiscordGuild>>()
-            .await
-            .map_err(|e| format!("Không thể parse danh sách server: {}", e))
-    }
-
     /// Lấy thông tin kênh (để tìm guild_id của Category)
     pub async fn get_channel(&self, channel_id: u64) -> Result<DiscordChannel, String> {
         let url = format!("{}/channels/{}", BASE_URL, channel_id);
@@ -112,6 +194,10 @@ impl DiscordClient {
             .map_err(|e| format!("Lỗi kết nối get_channel: {}", e))?;
 
         if !resp.status().is_success() {
+            self.note(resp.status());
+            if matches!(resp.status().as_u16(), 401 | 429) {
+                return Err(Self::http_err(resp.status(), &format!("khi lấy kênh {}", channel_id)));
+            }
             return Err(format!("Không tìm thấy kênh/category ID: {}", channel_id));
         }
 
@@ -131,12 +217,42 @@ impl DiscordClient {
             .map_err(|e| format!("Lỗi kết nối get_guild_channels: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Không thể lấy danh sách kênh của server {}: HTTP {}", guild_id, resp.status()));
+            self.note(resp.status());
+            return Err(Self::http_err(resp.status(), &format!("khi lấy danh sách kênh server {}", guild_id)));
         }
 
         resp.json::<Vec<DiscordChannel>>()
             .await
             .map_err(|e| format!("Không thể parse danh sách kênh server {}: {}", guild_id, e))
+    }
+
+    /// Lấy một trang tin nhắn cũ hơn `before` (None = trang mới nhất), mới nhất trước
+    pub async fn get_messages_before(
+        &self,
+        channel_id: u64,
+        limit: u32,
+        before: Option<u64>,
+    ) -> Result<Vec<DiscordMessage>, String> {
+        let mut url = format!("{}/channels/{}/messages?limit={}", BASE_URL, channel_id, limit.min(100));
+        if let Some(before_id) = before {
+            url.push_str(&format!("&before={}", before_id));
+        }
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("NET: Lỗi đọc tin nhắn kênh {}: {}", channel_id, e))?;
+
+        if !resp.status().is_success() {
+            self.note(resp.status());
+            return Err(Self::http_err(resp.status(), &format!("khi lấy tin nhắn kênh {}", channel_id)));
+        }
+
+        resp.json::<Vec<DiscordMessage>>()
+            .await
+            .map_err(|e| format!("Không thể parse tin nhắn kênh {}: {}", channel_id, e))
     }
 
     /// Lấy danh sách tin nhắn của một kênh
@@ -159,7 +275,8 @@ impl DiscordClient {
             .map_err(|e| format!("Lỗi đọc tin nhắn kênh {}: {}", channel_id, e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Lỗi HTTP {} khi lấy tin nhắn kênh {}", resp.status(), channel_id));
+            self.note(resp.status());
+            return Err(Self::http_err(resp.status(), &format!("khi lấy tin nhắn kênh {}", channel_id)));
         }
 
         resp.json::<Vec<DiscordMessage>>()
@@ -217,6 +334,10 @@ impl DiscordClient {
         if status.is_success() {
             return Ok(SendOutcome::Sent);
         }
+        self.note(status);
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Self::http_err(status, "khi gửi tin nhắn"));
+        }
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             let retry_after = resp
                 .json::<RateLimitResponse>()
@@ -272,6 +393,11 @@ impl DiscordClient {
             if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::OK {
                 return Ok(true);
             }
+            self.note(status);
+
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(Self::http_err(status, "khi thả reaction"));
+            }
 
             if status == reqwest::StatusCode::FORBIDDEN {
                 // Không có quyền react trong kênh này
@@ -291,7 +417,8 @@ impl DiscordClient {
             }
 
             let err_body = resp.text().await.unwrap_or_default();
-            return Err(format!("Lỗi HTTP {}: {}", status, &err_body[..err_body.len().min(80)]));
+            let snippet: String = err_body.chars().take(80).collect();
+            return Err(format!("Lỗi HTTP {}: {}", status, snippet));
         }
     }
 }

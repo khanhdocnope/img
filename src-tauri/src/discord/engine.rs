@@ -1,22 +1,164 @@
 use crate::config::ConfigManager;
-use crate::discord::client::{DiscordClient, SendOutcome};
-use crate::models::{CategoryConfig, ChannelProgress, EngineStatus};
+use crate::discord::client::{DiscordClient, InvalidMeter, SendOutcome};
+use crate::models::{
+    Account, BotSettings, CategoryConfig, ChannelProgress, Config, DiscordMessage, EngineStatus, WorkerStatus,
+};
 use chrono::Local;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use parking_lot::{Mutex, RwLock};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 
+/// Số phản hồi lỗi (401/403/429) trong 10 phút mà tại đó mọi tài khoản tạm nghỉ để tránh bị chặn IP
+const INVALID_LIMIT: usize = 120;
+
 pub type LogCallback = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
+/// Số ngẫu nhiên trong [0, 1), an toàn khi gọi từ nhiều luồng (splitmix64 trộn thêm đồng hồ)
+fn rand_unit() -> f64 {
+    static STATE: AtomicU64 = AtomicU64::new(0x853C_49E6_748F_EA9B);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let step = 0x9E37_79B9_7F4A_7C15u64;
+    let mut z = STATE.fetch_add(step, Ordering::Relaxed).wrapping_add(step) ^ nanos;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Số ngẫu nhiên trong [min, max]
+fn rand_between(min: f64, max: f64) -> f64 {
+    if max <= min {
+        min
+    } else {
+        min + rand_unit() * (max - min)
+    }
+}
+
 #[derive(Clone)]
+/// Bối cảnh riêng của một tài khoản đang chạy (mỗi tài khoản có client, nhịp và bộ bảo vệ riêng)
+struct WorkerCtx {
+    client: DiscordClient,
+    account_id: String,
+    account_name: String,
+    /// Tiền tố log khi chạy nhiều tài khoản, ví dụ "[Acc chính] "
+    tag: String,
+    /// Chạy nhiều tài khoản cùng lúc
+    multi: bool,
+    /// Tài khoản đầu tiên dùng khóa tiến trình cũ (chỉ ID kênh) để giữ dữ liệu của bản trước
+    legacy_keys: bool,
+    config_mgr: ConfigManager,
+    /// Cờ chạy riêng của tài khoản này (tắt khi bấm Dừng hoặc khi token bị từ chối)
+    run: Arc<AtomicBool>,
+    /// Tổng reaction của phiên (mọi tài khoản)
+    session_reactions: Arc<AtomicU64>,
+    /// Reaction của riêng tài khoản này
+    my_reactions: Arc<AtomicU64>,
+    on_log: LogCallback,
+    meter: Arc<InvalidMeter>,
+    /// Hệ số tốc độ ngẫu nhiên riêng của tài khoản (0.9–1.3) để hai nhịp không giống nhau
+    speed: f64,
+    /// Độ trễ tối thiểu giữa hai reaction (cao hơn khi chạy nhiều tài khoản)
+    min_delay: f64,
+    strikes: AtomicU32,
+    cooldown_until_ms: AtomicU64,
+    /// Các kênh không có quyền react: bỏ qua một thời gian thay vì gọi lại mỗi lượt
+    blocked: Mutex<HashMap<u64, Instant>>,
+}
+
+impl WorkerCtx {
+    fn alive(&self) -> bool {
+        self.run.load(Ordering::SeqCst)
+    }
+
+    fn log(&self, msg: String) {
+        let timestamp = Local::now().format("%H:%M:%S");
+        (self.on_log)(format!("[{}] {}{}", timestamp, self.tag, msg));
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn cooldown_left(&self) -> f64 {
+        let until = self.cooldown_until_ms.load(Ordering::SeqCst);
+        let now = Self::now_ms();
+        if until > now {
+            (until - now) as f64 / 1000.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Ghi nhận một đợt rate limit kéo dài, trả về số giây phải nghỉ (60s -> 180s -> 600s)
+    fn strike(&self) -> u64 {
+        let n = self.strikes.fetch_add(1, Ordering::SeqCst) + 1;
+        let secs = match n {
+            1 => 60,
+            2 => 180,
+            _ => 600,
+        };
+        self.cooldown_until_ms
+            .store(Self::now_ms() + secs * 1000, Ordering::SeqCst);
+        secs
+    }
+
+    fn channel_blocked(&self, channel_id: u64) -> bool {
+        let mut map = self.blocked.lock();
+        match map.get(&channel_id) {
+            Some(t) if t.elapsed() < Duration::from_secs(1800) => true,
+            Some(_) => {
+                map.remove(&channel_id);
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn block_channel(&self, channel_id: u64) {
+        self.blocked.lock().insert(channel_id, Instant::now());
+    }
+
+    fn progress_key(&self, channel_id_str: &str) -> String {
+        if self.legacy_keys {
+            channel_id_str.to_string()
+        } else {
+            format!("{}:{}", self.account_id, channel_id_str)
+        }
+    }
+
+    /// Lỗi nghiêm trọng (token bị từ chối): dừng riêng tài khoản này
+    fn fatal(&self, reason: &str) {
+        self.log(format!("[LỖI] {}", reason));
+        self.run.store(false, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone)]
+struct WorkerHandle {
+    account_id: String,
+    name: String,
+    run: Arc<AtomicBool>,
+    reactions: Arc<AtomicU64>,
+    /// (trạng thái, ghi chú)
+    state: Arc<RwLock<(String, String)>>,
+}
+
 pub struct ReactorEngine {
     is_running: Arc<AtomicBool>,
     session_reactions: Arc<AtomicU64>,
-    total_channels_scanned: Arc<AtomicUsize>,
-    active_account_name: Arc<parking_lot::RwLock<String>>,
+    active_workers: Arc<AtomicUsize>,
+    workers: Arc<RwLock<Vec<WorkerHandle>>>,
+    meter: Arc<InvalidMeter>,
 }
 
 impl ReactorEngine {
@@ -24,9 +166,15 @@ impl ReactorEngine {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             session_reactions: Arc::new(AtomicU64::new(0)),
-            total_channels_scanned: Arc::new(AtomicUsize::new(0)),
-            active_account_name: Arc::new(parking_lot::RwLock::new(String::new())),
+            active_workers: Arc::new(AtomicUsize::new(0)),
+            workers: Arc::new(RwLock::new(Vec::new())),
+            meter: Arc::new(InvalidMeter::default()),
         }
+    }
+
+    /// Bộ đếm phản hồi lỗi dùng chung, gắn vào client của mọi tài khoản
+    pub fn meter(&self) -> Arc<InvalidMeter> {
+        self.meter.clone()
     }
 
     pub fn is_running(&self) -> bool {
@@ -36,129 +184,248 @@ impl ReactorEngine {
     pub fn get_status(&self, config_mgr: &ConfigManager) -> EngineStatus {
         let is_running = self.is_running();
         let session_reactions = self.session_reactions.load(Ordering::SeqCst);
-        let total_channels_scanned = config_mgr.get_progress().len();
-        let active_account_name = self.active_account_name.read().clone();
+
+        // Cùng một kênh có thể có khóa tiến trình của nhiều tài khoản: đếm theo ID kênh
+        let total_channels_scanned = config_mgr
+            .get_progress()
+            .keys()
+            .map(|k| k.rsplit(':').next().unwrap_or(k).to_string())
+            .collect::<HashSet<_>>()
+            .len();
+
+        let workers: Vec<WorkerStatus> = self
+            .workers
+            .read()
+            .iter()
+            .map(|w| {
+                let (state, note) = w.state.read().clone();
+                WorkerStatus {
+                    account_id: w.account_id.clone(),
+                    name: w.name.clone(),
+                    state,
+                    note,
+                    reactions: w.reactions.load(Ordering::SeqCst),
+                }
+            })
+            .collect();
+
+        let mut names: Vec<String> = workers.iter().map(|w| w.name.clone()).collect();
+        if names.is_empty() {
+            names = config_mgr
+                .get_running_accounts()
+                .into_iter()
+                .map(|a| a.name)
+                .collect();
+        }
 
         EngineStatus {
             is_running,
             session_reactions,
             total_reactions: config_mgr.get_total_reactions(),
             total_channels_scanned,
-            active_account_name,
+            active_account_name: names.join(" + "),
+            workers,
         }
     }
 
     pub fn stop(&self) {
         self.is_running.store(false, Ordering::SeqCst);
+        for w in self.workers.read().iter() {
+            w.run.store(false, Ordering::SeqCst);
+        }
     }
 
+    /// Chạy mỗi tài khoản một worker độc lập. Tài khoản thứ hai bắt đầu trễ 20–45s.
     pub async fn start(
         &self,
-        client: DiscordClient,
-        account_name: String,
+        accounts: Vec<(Account, DiscordClient)>,
         config_mgr: ConfigManager,
         on_log: LogCallback,
     ) {
+        if accounts.is_empty() {
+            return;
+        }
         if self.is_running.swap(true, Ordering::SeqCst) {
             // Đang chạy rồi
             return;
         }
 
-        *self.active_account_name.write() = account_name.clone();
-        let is_running_clone = self.is_running.clone();
-        let session_reactions_clone = self.session_reactions.clone();
-        let total_scanned_clone = self.total_channels_scanned.clone();
+        let multi = accounts.len() > 1;
+        self.active_workers.store(accounts.len(), Ordering::SeqCst);
 
-        tokio::spawn(async move {
-            let log = |msg: String| {
-                let timestamp = Local::now().format("%H:%M:%S");
-                on_log(format!("[{}] {}", timestamp, msg));
-            };
+        let mut handles: Vec<WorkerHandle> = Vec::new();
+        for (idx, (account, client)) in accounts.into_iter().enumerate() {
+            let run = Arc::new(AtomicBool::new(true));
+            let reactions = Arc::new(AtomicU64::new(0));
+            let state = Arc::new(RwLock::new(("starting".to_string(), String::new())));
 
-            log(format!("Bắt đầu hoạt động cho tài khoản: {}", account_name));
+            handles.push(WorkerHandle {
+                account_id: account.id.clone(),
+                name: account.name.clone(),
+                run: run.clone(),
+                reactions: reactions.clone(),
+                state: state.clone(),
+            });
 
-            // Xác thực tài khoản trước
-            match client.get_me().await {
-                Ok(user) => {
-                    log(format!(
-                        "Đăng nhập thành công: {} (ID: {})",
-                        user.username, user.id
-                    ));
+            let ctx = Arc::new(WorkerCtx {
+                client,
+                account_id: account.id.clone(),
+                account_name: account.name.clone(),
+                tag: if multi { format!("[{}] ", account.name) } else { String::new() },
+                multi,
+                legacy_keys: idx == 0,
+                config_mgr: config_mgr.clone(),
+                run,
+                session_reactions: self.session_reactions.clone(),
+                my_reactions: reactions,
+                on_log: on_log.clone(),
+                meter: self.meter.clone(),
+                speed: rand_between(0.9, 1.3),
+                min_delay: if multi { 0.8 } else { 0.5 },
+                strikes: AtomicU32::new(0),
+                cooldown_until_ms: AtomicU64::new(0),
+                blocked: Mutex::new(HashMap::new()),
+            });
+
+            let start_delay = if idx == 0 { 0.0 } else { rand_between(20.0, 45.0) };
+            let is_running = self.is_running.clone();
+            let active = self.active_workers.clone();
+
+            tokio::spawn(async move {
+                Self::run_worker(ctx, idx, start_delay, state).await;
+                // Worker cuối cùng thoát thì đánh dấu bot đã dừng
+                if active.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    is_running.store(false, Ordering::SeqCst);
                 }
-                Err(err) => {
-                    log(format!("[LỖI] {}", err));
-                    is_running_clone.store(false, Ordering::SeqCst);
-                    return;
-                }
-            }
-
-            // Luồng gửi emoji định kỳ chạy song song với luồng react
-            tokio::spawn(Self::run_emoji_sender(
-                client.clone(),
-                config_mgr.clone(),
-                is_running_clone.clone(),
-                on_log.clone(),
-            ));
-
-            while is_running_clone.load(Ordering::SeqCst) {
-                let config = config_mgr.get_config();
-                let categories = config.categories.clone();
-                let settings = config.bot_settings.clone();
-
-                if categories.is_empty() {
-                    log("Chưa cấu hình Category nào để quét. Tạm nghỉ 30s...".to_string());
-                    sleep(Duration::from_secs(30)).await;
-                    continue;
-                }
-
-                let sem = Arc::new(Semaphore::new(settings.concurrent_channels.max(1)));
-                let mut round_reactions = 0u64;
-
-                for cat in categories {
-                    if !is_running_clone.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    match Self::process_category(
-                        &client,
-                        &cat,
-                        &config_mgr,
-                        sem.clone(),
-                        is_running_clone.clone(),
-                        session_reactions_clone.clone(),
-                        on_log.clone(),
-                    )
-                    .await
-                    {
-                        Ok(count) => {
-                            round_reactions += count;
-                        }
-                        Err(e) => {
-                            log(format!("[!] Lỗi xử lý category {}: {}", cat.id, e));
-                        }
-                    }
-                }
-
-                total_scanned_clone.store(config_mgr.get_progress().len(), Ordering::SeqCst);
-                log(format!(
-                    "Hoàn thành lượt quét! Đã thả {} reactions trong lượt này. Nghỉ 10s trước lượt mới...",
-                    round_reactions
-                ));
-
-                // Cho phép ngắt nghỉ ngay nếu người dùng bấm dừng
-                for _ in 0..10 {
-                    if !is_running_clone.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    sleep(Duration::from_secs(1)).await;
-                }
-            }
-
-            config_mgr.save_stats();
-            log("Bot đã dừng an toàn.".to_string());
-        });
+            });
+        }
+        *self.workers.write() = handles;
     }
 
+    async fn run_worker(
+        ctx: Arc<WorkerCtx>,
+        idx: usize,
+        start_delay: f64,
+        state: Arc<RwLock<(String, String)>>,
+    ) {
+        let set = |s: &str, note: &str| {
+            *state.write() = (s.to_string(), note.to_string());
+        };
+
+        if start_delay > 0.0 {
+            set("starting", &format!("Bắt đầu sau {:.0}s", start_delay));
+            ctx.log(format!(
+                "Sẽ bắt đầu sau {:.0}s để không trùng nhịp với tài khoản còn lại.",
+                start_delay
+            ));
+            Self::sleep_while_running(start_delay, &ctx.run).await;
+            if !ctx.alive() {
+                set("stopped", "");
+                return;
+            }
+        }
+
+        ctx.log(format!("Bắt đầu hoạt động cho tài khoản: {}", ctx.account_name));
+
+        // Xác thực tài khoản trước
+        match ctx.client.get_me().await {
+            Ok(user) => ctx.log(format!("Đăng nhập thành công: {} (ID: {})", user.username, user.id)),
+            Err(err) => {
+                ctx.log(format!("[LỖI] {}", err));
+                set("error", "Đăng nhập thất bại");
+                ctx.run.store(false, Ordering::SeqCst);
+                return;
+            }
+        }
+
+        // Chỉ tài khoản chính gửi emoji định kỳ (tránh gửi trùng từ hai tài khoản)
+        if idx == 0 {
+            tokio::spawn(Self::run_emoji_sender(
+                ctx.client.clone(),
+                ctx.config_mgr.clone(),
+                ctx.run.clone(),
+                ctx.on_log.clone(),
+            ));
+        }
+
+        while ctx.alive() {
+            // Tạm nghỉ khi bị rate limit kéo dài
+            let cool = ctx.cooldown_left();
+            if cool > 0.0 {
+                set("cooldown", &format!("Nghỉ {:.0}s do bị giới hạn tốc độ", cool));
+                Self::sleep_while_running(cool.min(30.0), &ctx.run).await;
+                continue;
+            }
+            // Quá nhiều phản hồi lỗi gần đây (cả hai tài khoản): nghỉ để tránh bị chặn IP
+            if ctx.meter.recent() >= INVALID_LIMIT {
+                ctx.log("[!] Có quá nhiều phản hồi lỗi (401/403/429) gần đây. Tạm nghỉ 10 phút để an toàn.".to_string());
+                set("cooldown", "Nghỉ 10 phút (quá nhiều phản hồi lỗi)");
+                Self::sleep_while_running(600.0, &ctx.run).await;
+                continue;
+            }
+
+            set("running", "");
+            let config = ctx.config_mgr.get_config();
+            let categories = config.categories.clone();
+            let settings = config.bot_settings.clone();
+
+            if categories.is_empty() {
+                ctx.log("Chưa cấu hình Category nào để quét. Tạm nghỉ 30s...".to_string());
+                Self::sleep_while_running(30.0, &ctx.run).await;
+                continue;
+            }
+
+            // Chạy nhiều tài khoản thì mỗi tài khoản dùng một nửa số kênh song song
+            let mut conc = settings.concurrent_channels.max(1);
+            if ctx.multi {
+                conc = (conc + 1) / 2;
+            }
+            let sem = Arc::new(Semaphore::new(conc.max(1)));
+            let strikes_before = ctx.strikes.load(Ordering::SeqCst);
+            let mut round_reactions = 0u64;
+
+            for cat in categories {
+                if !ctx.alive() || ctx.cooldown_left() > 0.0 {
+                    break;
+                }
+
+                match Self::process_category(&ctx, &cat, sem.clone()).await {
+                    Ok(count) => round_reactions += count,
+                    Err(e) => {
+                        if e.starts_with("AUTH:") {
+                            ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
+                            set("error", "Token bị từ chối (401)");
+                        } else if e.starts_with("RATE:") {
+                            let secs = ctx.strike();
+                            ctx.log(format!("[!] Bị giới hạn tốc độ khi đọc dữ liệu, nghỉ {}s.", secs));
+                        } else {
+                            ctx.log(format!("[!] Lỗi xử lý category {}: {}", cat.id, e));
+                        }
+                    }
+                }
+            }
+
+            // Một lượt quét sạch (không bị rate limit) thì xóa dấu vết vi phạm
+            if ctx.alive() && ctx.strikes.load(Ordering::SeqCst) == strikes_before {
+                ctx.strikes.store(0, Ordering::SeqCst);
+            }
+
+            if ctx.alive() {
+                ctx.log(format!(
+                    "Hoàn thành lượt quét! Đã thả {} reactions trong lượt này. Nghỉ vài giây trước lượt mới...",
+                    round_reactions
+                ));
+                // Nghỉ ngẫu nhiên 5–10s (nhân hệ số riêng), ngắt ngay nếu người dùng bấm dừng
+                Self::sleep_while_running(rand_between(5.0, 10.0) * ctx.speed, &ctx.run).await;
+            }
+        }
+
+        ctx.config_mgr.save_stats();
+        if state.read().0 != "error" {
+            set("stopped", "");
+        }
+        ctx.log("Đã dừng an toàn.".to_string());
+    }
 
     /// Bộ sinh số ngẫu nhiên xorshift64 (không cần thêm thư viện ngoài)
     fn next_rand(state: &mut u64) -> u64 {
@@ -310,7 +577,8 @@ impl ReactorEngine {
                     recent.truncate(RECENT_LIMIT);
                     sent_total += 1;
                     log(format!("[Emoji] Đã gửi {} (tổng: {})", emoji, sent_total));
-                    Self::sleep_while_running(cfg.interval_secs.max(1) as f64, &is_running).await;
+                    // Cộng thêm 0–1,5s ngẫu nhiên để không đúng mép slowmode
+                    Self::sleep_while_running(cfg.interval_secs.max(1) as f64 + rand_between(0.0, 1.5), &is_running).await;
                 }
                 Ok(SendOutcome::RateLimited(secs)) => {
                     log(format!("[Emoji] Kênh đang giới hạn tốc độ, chờ {:.0}s...", secs + 0.5));
@@ -330,20 +598,16 @@ impl ReactorEngine {
     }
 
     async fn process_category(
-        client: &DiscordClient,
+        ctx: &Arc<WorkerCtx>,
         cat: &CategoryConfig,
-        config_mgr: &ConfigManager,
         sem: Arc<Semaphore>,
-        is_running: Arc<AtomicBool>,
-        session_reactions: Arc<AtomicU64>,
-        on_log: LogCallback,
     ) -> Result<u64, String> {
-        let cat_info = client.get_channel(cat.id).await?;
+        let cat_info = ctx.client.get_channel(cat.id).await?;
         let guild_id = cat_info
             .guild_id
             .ok_or_else(|| format!("Category {} không có guild_id", cat.id))?;
 
-        let all_channels = client.get_guild_channels(&guild_id).await?;
+        let all_channels = ctx.client.get_guild_channels(&guild_id).await?;
         let cat_id_str = cat.id.to_string();
 
         let target_channels: Vec<_> = all_channels
@@ -357,44 +621,23 @@ impl ReactorEngine {
 
         let count = target_channels.len();
         let cat_name = cat_info.name.unwrap_or_else(|| cat.name.clone());
-        let log_prefix = format!("[{}]", cat_name);
-
-        {
-            let timestamp = Local::now().format("%H:%M:%S");
-            on_log(format!(
-                "[{}] {} Xử lý {} kênh văn bản...",
-                timestamp, log_prefix, count
-            ));
-        }
+        ctx.log(format!("[{}] Xử lý {} kênh văn bản...", cat_name, count));
 
         let mut tasks = Vec::new();
         for ch in target_channels {
-            if !is_running.load(Ordering::SeqCst) {
+            if !ctx.alive() {
                 break;
             }
 
-            let client_c = client.clone();
-            let config_mgr_c = config_mgr.clone();
+            let ctx_c = ctx.clone();
             let sem_c = sem.clone();
-            let is_running_c = is_running.clone();
-            let session_reactions_c = session_reactions.clone();
-            let on_log_c = on_log.clone();
 
             tasks.push(tokio::spawn(async move {
                 let _permit = sem_c.acquire().await.unwrap();
-                if !is_running_c.load(Ordering::SeqCst) {
+                if !ctx_c.alive() {
                     return 0;
                 }
-                Self::process_channel(
-                    &client_c,
-                    &ch.id,
-                    ch.name.as_deref().unwrap_or("channel"),
-                    &config_mgr_c,
-                    is_running_c,
-                    session_reactions_c,
-                    on_log_c,
-                )
-                .await
+                Self::process_channel(&ctx_c, &ch.id, ch.name.as_deref().unwrap_or("channel")).await
             }));
         }
 
@@ -408,52 +651,25 @@ impl ReactorEngine {
         Ok(total_cat_reactions)
     }
 
-    async fn process_channel(
-        client: &DiscordClient,
-        channel_id_str: &str,
+    /// Thả reaction cho một lô tin nhắn.
+    /// Trả về (số reaction mới, id tin cuối cùng đã react, có lỗi tạm thời không).
+    async fn react_messages(
+        ctx: &Arc<WorkerCtx>,
+        channel_id: u64,
         channel_name: &str,
-        config_mgr: &ConfigManager,
-        is_running: Arc<AtomicBool>,
-        session_reactions: Arc<AtomicU64>,
-        on_log: LogCallback,
-    ) -> u64 {
-        let channel_id: u64 = match channel_id_str.parse() {
-            Ok(id) => id,
-            Err(_) => return 0,
-        };
-
-        let progress = config_mgr.get_progress();
-        let ch_progress = progress.get(channel_id_str).cloned().unwrap_or_default();
-        let last_id = ch_progress.last_reacted_id.and_then(|s| s.parse::<u64>().ok());
-        let mut total_reacted = ch_progress.total_reacted;
-
-        let config = config_mgr.get_config();
-        let settings = config.bot_settings;
-        let limit = if settings.full_scan {
-            100
-        } else {
-            settings.max_messages_per_channel.unwrap_or(100)
-        };
-
-        let after = if settings.full_scan { None } else { last_id };
-
-        let messages = match client.get_messages(channel_id, limit, after).await {
-            Ok(msgs) => msgs,
-            Err(err) => {
-                let timestamp = Local::now().format("%H:%M:%S");
-                on_log(format!("[{}] #{}: {}", timestamp, channel_name, err));
-                return 0;
-            }
-        };
-
+        messages: Vec<DiscordMessage>,
+        settings: &BotSettings,
+        config: &Config,
+    ) -> (u64, Option<String>, bool) {
         let mut new_reacted = 0u64;
         let mut last_message_id = None;
-        // Nếu có bất kỳ reaction nào lỗi thì KHÔNG đẩy tiến trình lên,
-        // để lượt quét sau quét lại và không bỏ sót tin nhắn.
+        // Chỉ lỗi tạm thời (mất mạng / rate limit kéo dài) mới giữ nguyên tiến trình để quét lại.
+        // Lỗi vĩnh viễn (vd. tin đã đủ 20 loại emoji, emoji đã bị xóa) thì bỏ qua,
+        // nếu không một tin lỗi sẽ chặn cả kênh.
         let mut had_error = false;
 
         'msgs: for msg in messages {
-            if !is_running.load(Ordering::SeqCst) {
+            if !ctx.alive() {
                 break;
             }
 
@@ -465,7 +681,7 @@ impl ReactorEngine {
             }
 
             for r in msg.reactions {
-                if !is_running.load(Ordering::SeqCst) {
+                if !ctx.alive() {
                     break;
                 }
                 if r.me {
@@ -483,61 +699,162 @@ impl ReactorEngine {
                     None => continue,
                 };
 
-                match client.add_reaction(channel_id, &msg.id, &param).await {
+                match ctx.client.add_reaction(channel_id, &msg.id, &param).await {
                     Ok(true) => {
                         new_reacted += 1;
-                        total_reacted += 1;
-                        session_reactions.fetch_add(1, Ordering::SeqCst);
-                        config_mgr.count_reaction();
+                        ctx.session_reactions.fetch_add(1, Ordering::SeqCst);
+                        ctx.my_reactions.fetch_add(1, Ordering::SeqCst);
+                        ctx.config_mgr.count_reaction();
                         last_message_id = Some(msg.id.clone());
 
-                        let timestamp = Local::now().format("%H:%M:%S");
-                        on_log(format!(
-                            "[{}] [+{}] #{}: tin nhắn {}",
-                            timestamp, emoji_display, channel_name, msg.id
-                        ));
+                        ctx.log(format!("[+{}] #{}: tin nhắn {}", emoji_display, channel_name, msg.id));
                     }
                     Ok(false) => {
-                        // Forbidden
+                        // 403: không có quyền react. Bỏ qua kênh này một lúc để không gọi lại liên tục
+                        ctx.block_channel(channel_id);
+                        ctx.log(format!(
+                            "[!] #{}: không có quyền react, bỏ qua kênh này 30 phút.",
+                            channel_name
+                        ));
+                        break 'msgs;
                     }
                     Err(err) => {
-                        had_error = true;
-                        let timestamp = Local::now().format("%H:%M:%S");
-                        on_log(format!("[{}] [!] Lỗi react tin nhắn {}: {}", timestamp, msg.id, err));
+                        if err.starts_with("AUTH:") {
+                            ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
+                            had_error = true;
+                            break 'msgs;
+                        }
+                        if err.starts_with("Đã vượt quá") {
+                            had_error = true;
+                            let secs = ctx.strike();
+                            ctx.log(format!("[!] Bị giới hạn tốc độ kéo dài, tạm nghỉ {}s.", secs));
+                            break 'msgs;
+                        }
                         if err.starts_with("NET:") {
+                            had_error = true;
+                            ctx.log(format!("[!] Lỗi react tin nhắn {}: {}", msg.id, err));
                             // Mất mạng: dừng kênh này, đợi mạng hồi phục rồi quét lại ở lượt sau
                             sleep(Duration::from_secs(10)).await;
                             break 'msgs;
                         }
+                        ctx.log(format!("[!] Lỗi react tin nhắn {}: {}", msg.id, err));
                     }
                 }
 
-                let min_delay = settings.delay.max(0.5);
-                let delay_secs = match settings.delay_max {
-                    Some(max_d) if max_d > min_delay => {
-                        fastrand::f64() * (max_d - min_delay) + min_delay
-                    }
-                    _ => min_delay,
-                };
-                sleep(Duration::from_secs_f64(delay_secs)).await;
+                // Tick ngẫu nhiên trong [delay, delay_max], nhân hệ số tốc độ riêng của tài khoản
+                let lo = settings.delay.max(ctx.min_delay);
+                let hi = settings.delay_max.max(lo);
+                sleep(Duration::from_secs_f64(rand_between(lo, hi) * ctx.speed)).await;
             }
         }
 
-        if let (false, Some(last_id_str)) = (had_error, last_message_id) {
-            let mut p_map = config_mgr.get_progress();
-            p_map.insert(
-                channel_id_str.to_string(),
-                ChannelProgress {
-                    name: channel_name.to_string(),
-                    last_reacted_id: Some(last_id_str),
-                    total_reacted,
-                },
-            );
-            let _ = config_mgr.save_progress(p_map);
+        (new_reacted, last_message_id, had_error)
+    }
+
+    async fn process_channel(ctx: &Arc<WorkerCtx>, channel_id_str: &str, channel_name: &str) -> u64 {
+        let channel_id: u64 = match channel_id_str.parse() {
+            Ok(id) => id,
+            Err(_) => return 0,
+        };
+        if !ctx.alive() || ctx.cooldown_left() > 0.0 || ctx.channel_blocked(channel_id) {
+            return 0;
+        }
+
+        let key = ctx.progress_key(channel_id_str);
+        let ch_progress = ctx
+            .config_mgr
+            .get_progress()
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let last_id = ch_progress.last_reacted_id.and_then(|s| s.parse::<u64>().ok());
+
+        let config = ctx.config_mgr.get_config();
+        let settings = config.bot_settings.clone();
+        let limit = if settings.full_scan {
+            100
+        } else {
+            settings.max_messages_per_channel.unwrap_or(100)
+        };
+        let after = if settings.full_scan { None } else { last_id };
+
+        // ── Giai đoạn 1: tin mới nhất ──
+        let messages = match ctx.client.get_messages(channel_id, limit, after).await {
+            Ok(msgs) => msgs,
+            Err(err) => {
+                if err.starts_with("AUTH:") {
+                    ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
+                } else if err.starts_with("RATE:") {
+                    let secs = ctx.strike();
+                    ctx.log(format!("[!] #{}: bị giới hạn tốc độ, nghỉ {}s.", channel_name, secs));
+                } else {
+                    ctx.log(format!("#{}: {}", channel_name, err));
+                }
+                return 0;
+            }
+        };
+
+        let (mut new_reacted, last_message_id, had_error) =
+            Self::react_messages(ctx, channel_id, channel_name, messages, &settings, &config).await;
+
+        if new_reacted > 0 || (!had_error && last_message_id.is_some()) {
+            let n = new_reacted;
+            ctx.config_mgr.update_channel_progress(&key, channel_name, |p| {
+                p.total_reacted += n;
+                if !had_error {
+                    if let Some(id) = last_message_id {
+                        p.last_reacted_id = Some(id);
+                    }
+                }
+            });
+        }
+
+        // ── Giai đoạn 2: quét ngược lịch sử, mỗi lượt một trang 100 tin cũ hơn ──
+        if settings.scan_history && !ch_progress.history_done && ctx.alive() && ctx.cooldown_left() <= 0.0 {
+            const PAGE: u32 = 100;
+            let before = ch_progress.history_cursor.as_deref().and_then(|s| s.parse::<u64>().ok());
+
+            match ctx.client.get_messages_before(channel_id, PAGE, before).await {
+                Ok(page) => {
+                    let page_len = page.len();
+                    let oldest = page.iter().filter_map(|m| m.id.parse::<u64>().ok()).min();
+
+                    let (n, _, err) =
+                        Self::react_messages(ctx, channel_id, channel_name, page, &settings, &config).await;
+                    new_reacted += n;
+
+                    // Chỉ tiến tiếp khi trang này xử lý xong trọn vẹn (không bị dừng/lỗi tạm thời)
+                    let completed = !err && ctx.alive();
+                    let reached_start = page_len < PAGE as usize || oldest.is_none();
+
+                    ctx.config_mgr.update_channel_progress(&key, channel_name, |p| {
+                        p.total_reacted += n;
+                        if completed {
+                            if reached_start {
+                                p.history_done = true;
+                            } else if let Some(o) = oldest {
+                                p.history_cursor = Some(o.to_string());
+                            }
+                        }
+                    });
+
+                    if completed && reached_start {
+                        ctx.log(format!("[Lịch sử] #{}: đã quét xong toàn bộ lịch sử kênh.", channel_name));
+                    }
+                }
+                Err(err) => {
+                    if err.starts_with("AUTH:") {
+                        ctx.fatal("Token bị Discord từ chối (401). Tài khoản này đã dừng, hãy kiểm tra lại token.");
+                    } else if err.starts_with("RATE:") {
+                        ctx.strike();
+                    }
+                    ctx.log(format!("[Lịch sử] #{}: {}", channel_name, err));
+                }
+            }
         }
 
         if new_reacted > 0 {
-            config_mgr.save_stats();
+            ctx.config_mgr.save_stats();
         }
 
         new_reacted

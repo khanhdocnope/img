@@ -68,17 +68,12 @@ jobs:
           $ANDROID_HOME/build-tools/34.0.0/apksigner verify dist/DiscordReactor.apk
           ls -lh dist/
 
-      - name: Đăng tải trực tiếp APK lên GitHub Releases
-        uses: softprops/action-gh-release@v2
+      - name: Lưu file APK
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: "Discord Auto-Reactor ${{ env.RELEASE_TAG }}"
-          body: |
-            ### Discord Auto-Reactor (Rust + Tauri v2)
-            - **Android**: tải `DiscordReactor.apk` về điện thoại rồi mở để cài.
-            - **Windows**: dùng `DiscordReactor-setup.exe` để cài đặt, hoặc `DiscordReactor-portable.exe` để chạy thẳng không cần cài.
-          files: dist/DiscordReactor.apk
-          token: ${{ secrets.GITHUB_TOKEN }}
+          name: android
+          path: dist/DiscordReactor.apk
+          if-no-files-found: error
 
   # ───────────────────────── Windows EXE ─────────────────────────
   build-windows:
@@ -112,10 +107,35 @@ jobs:
           }
           Get-ChildItem dist
 
-      - name: Đăng tải trực tiếp file Windows lên GitHub Releases
+      - name: Lưu file EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  # ───────────────────────── Phát hành ─────────────────────────
+  release:
+    needs: [build-apk, build-windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Tải các file đã build
+        uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Đăng lên GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "Discord Auto-Reactor ${{ env.RELEASE_TAG }}"
-          files: dist/*.exe
+          body: |
+            ### Discord Auto-Reactor (Rust + Tauri v2)
+            - **Android**: tải `DiscordReactor.apk` về điện thoại rồi mở để cài.
+            - **Windows**: dùng `DiscordReactor-setup.exe` để cài đặt, hoặc `DiscordReactor-portable.exe` để chạy thẳng không cần cài (cần WebView2, đã có sẵn trên Windows 10/11).
+          files: |
+            out/DiscordReactor.apk
+            out/DiscordReactor-setup.exe
+            out/DiscordReactor-portable.exe
           token: ${{ secrets.GITHUB_TOKEN }}

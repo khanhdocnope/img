@@ -47,28 +47,41 @@ pub struct Account {
     pub id: String,
     pub name: String,
     pub token: String,
+    /// Bật để tài khoản này chạy khi bấm Bắt đầu (tối đa 2 tài khoản song song)
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotSettings {
+    /// Độ trễ tối thiểu giữa hai reaction (giây)
     pub delay: f64,
-    #[serde(default)]
-    pub delay_max: Option<f64>,
+    /// Độ trễ tối đa (giây): mỗi reaction chờ một khoảng ngẫu nhiên trong [delay, delay_max]
+    #[serde(default = "default_delay_max")]
+    pub delay_max: f64,
     pub max_messages_per_channel: Option<u32>,
     pub skip_bot_messages: bool,
     pub full_scan: bool,
     pub concurrent_channels: usize,
+    /// Quét ngược toàn bộ lịch sử kênh (từng trang 100 tin) để react mọi tin đã có reaction
+    #[serde(default)]
+    pub scan_history: bool,
+}
+
+fn default_delay_max() -> f64 {
+    1.5
 }
 
 impl Default for BotSettings {
     fn default() -> Self {
         Self {
             delay: 1.0,
-            delay_max: Some(2.5),
+            delay_max: default_delay_max(),
             max_messages_per_channel: None,
             skip_bot_messages: true,
             full_scan: true,
             concurrent_channels: 4,
+            scan_history: false,
         }
     }
 }
@@ -174,9 +187,26 @@ pub struct ChannelProgress {
     pub name: String,
     pub last_reacted_id: Option<String>,
     pub total_reacted: u64,
+    /// ID tin cũ nhất đã quét trong lượt quét lịch sử (trang kế tiếp lấy các tin cũ hơn ID này)
+    #[serde(default)]
+    pub history_cursor: Option<String>,
+    /// Đã quét tới tin đầu tiên của kênh
+    #[serde(default)]
+    pub history_done: bool,
 }
 
 pub type ProgressMap = HashMap<String, ChannelProgress>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Trạng thái của từng tài khoản đang chạy
+pub struct WorkerStatus {
+    pub account_id: String,
+    pub name: String,
+    /// starting | running | cooldown | error | stopped
+    pub state: String,
+    pub note: String,
+    pub reactions: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineStatus {
@@ -185,16 +215,10 @@ pub struct EngineStatus {
     pub total_reactions: u64,
     pub total_channels_scanned: usize,
     pub active_account_name: String,
+    pub workers: Vec<WorkerStatus>,
 }
 
 // --- Discord API Payloads ---
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiscordGuild {
-    pub id: String,
-    pub name: String,
-    pub icon: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordUser {
@@ -252,4 +276,13 @@ pub struct DiscordMessage {
     pub content: String,
     #[serde(default)]
     pub reactions: Vec<DiscordReactionItem>,
+}
+
+/// Kết quả kiểm tra một Discord token
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenCheck {
+    /// "valid" = còn dùng được, "invalid" = hết hạn/bị khóa, "unknown" = chưa xác định (mạng, rate limit...)
+    pub status: String,
+    pub username: Option<String>,
+    pub message: String,
 }

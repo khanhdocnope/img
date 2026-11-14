@@ -11,6 +11,7 @@
   --green-soft: rgba(52, 211, 153, 0.13);
   --red: #f87171;
   --red-soft: rgba(248, 113, 113, 0.13);
+  --amber: #fbbf24;
   --radius: 14px;
   --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
 }
@@ -144,6 +145,18 @@ button { font: inherit; color: inherit; }
 .stat-val { font-size: 21px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .stat-desc { font-size: 12px; color: var(--muted); }
 
+.workers { display: flex; flex-direction: column; gap: 6px; }
+.workers.hidden { display: none; }
+.worker {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 10px; row-gap: 1px;
+  background: var(--surface-2); border-radius: 10px; padding: 8px 12px; font-size: 12.5px;
+}
+.worker .w-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.worker .w-state { grid-column: 1 / -1; grid-row: 2; color: var(--muted); font-size: 11.5px; }
+.worker .w-count { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.worker.w-running .w-state { color: var(--green); }
+.worker.w-cooldown .w-state { color: var(--amber); }
+.worker.w-error .w-state { color: var(--red); }
 .log-section { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 180px; }
 
 .terminal {
@@ -233,6 +246,13 @@ button { font: inherit; color: inherit; }
 .row-sub { font-size: 12px; color: var(--muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-actions { display: flex; align-items: center; gap: 2px; }
 
+.status { font-size: 11.5px; font-weight: 600; margin-top: 2px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; }
+.status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.st-valid { color: var(--green); }
+.st-invalid { color: var(--red); }
+.st-checking, .st-unknown { color: var(--muted); }
+.st-checking::before { animation: pulse 1.2s ease-in-out infinite; }
+.row-card.bad .avatar { background: var(--red-soft); color: var(--red); }
 .chip {
   font-size: 10.5px; font-weight: 600;
   padding: 2px 8px; border-radius: 999px;
@@ -301,6 +321,8 @@ button { font: inherit; color: inherit; }
 .input:focus { border-color: var(--accent); }
 .sub-head { margin-top: 6px; }
 .input-wide { width: 172px; padding: 8px 10px; background: var(--surface-2); font-family: var(--mono); font-size: 12.5px; flex-shrink: 0; }
+.range-inputs { display: flex; align-items: center; gap: 6px; color: var(--muted); flex-shrink: 0; }
+.range-inputs .input-num { width: 60px; }
 .input-num { width: 76px; text-align: center; padding: 8px; background: var(--surface-2); flex-shrink: 0; }
 
 /* Switch */

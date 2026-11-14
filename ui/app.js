@@ -28,6 +28,7 @@ document.querySelectorAll(".nav-item").forEach(btn => {
     const targetId = btn.getAttribute("data-tab");
     const screen = document.getElementById(targetId);
     if (screen) screen.classList.add("active");
+    if (targetId === "tab-accounts") checkAllAccounts(2 * 60 * 1000);
   });
 });
 
@@ -39,10 +40,11 @@ async function loadConfig() {
 
     // Settings
     document.getElementById("cfg-delay").value = currentConfig.bot_settings.delay || 1.0;
-    document.getElementById("cfg-delay-max").value = currentConfig.bot_settings.delay_max ?? (currentConfig.bot_settings.delay || 2.5);
+    document.getElementById("cfg-delay-max").value = currentConfig.bot_settings.delay_max || 1.5;
     document.getElementById("cfg-conc").value = currentConfig.bot_settings.concurrent_channels || 4;
     document.getElementById("cfg-skip-bots").checked = currentConfig.bot_settings.skip_bot_messages;
     document.getElementById("cfg-full-scan").checked = currentConfig.bot_settings.full_scan;
+    document.getElementById("cfg-scan-history").checked = !!currentConfig.bot_settings.scan_history;
 
     // Gửi emoji tự động
     const es = currentConfig.emoji_sender || {};
@@ -51,12 +53,10 @@ async function loadConfig() {
     document.getElementById("cfg-es-interval").value = es.interval_secs || 30;
     document.getElementById("cfg-es-animated").checked = !!es.allow_animated;
 
-    // Filters
-    document.getElementById("cfg-whitelist").value = (currentConfig.emoji_whitelist || []).join(", ");
-    document.getElementById("cfg-blacklist").value = (currentConfig.emoji_blacklist || []).join(", ");
 
     renderAccounts();
     renderCategories();
+    checkAllAccounts(); // chạy nền, không chặn giao diện
   } catch (e) {
     console.error("Lỗi tải config:", e);
   }
@@ -79,6 +79,82 @@ function toast(msg, type) {
   toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2800);
 }
 
+// ---- Kiểm tra token ----
+const tokenStatus = {};            // accountId -> { state, msg, user, at }
+const TOKEN_STALE_MS = 5 * 60 * 1000;
+let checkingTokens = false;
+
+function cleanToken(raw) {
+  // Bỏ khoảng trắng và dấu nháy thừa khi dán token từ localStorage / console
+  return String(raw || "").trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+}
+
+async function runTokenCheck(token) {
+  try {
+    const r = await invoke("check_token", { token });
+    if (r && r.status) return r;
+  } catch (_) {}
+  return { status: "unknown", username: null, message: "Không kiểm tra được lúc này." };
+}
+
+async function checkAccount(acc) {
+  tokenStatus[acc.id] = { ...(tokenStatus[acc.id] || {}), state: "checking" };
+  renderAccounts();
+  const r = await runTokenCheck(acc.token);
+  tokenStatus[acc.id] = { state: r.status, msg: r.message, user: r.username, at: Date.now() };
+  renderAccounts();
+}
+
+// Kiểm tra lần lượt các tài khoản chưa kiểm tra hoặc đã cũ (không chặn giao diện)
+async function checkAllAccounts(maxAgeMs = TOKEN_STALE_MS) {
+  if (checkingTokens || !currentConfig || !currentConfig.accounts) return;
+  checkingTokens = true;
+  try {
+    for (const acc of [...currentConfig.accounts]) {
+      const st = tokenStatus[acc.id];
+      if (st && st.at && Date.now() - st.at < maxAgeMs) continue;
+      await checkAccount(acc);
+      await new Promise((res) => setTimeout(res, 400)); // tránh dồn request
+    }
+  } finally {
+    checkingTokens = false;
+  }
+}
+
+// Kiểm tra token trước khi lưu. Trả về { ok, name, result }
+async function verifyBeforeSave(token, typedName) {
+  const r = await runTokenCheck(token);
+  if (r.status === "invalid") {
+    toast("Token không dùng được:\n" + r.message, "err");
+    return { ok: false };
+  }
+  if (r.status === "unknown" && !confirm(r.message + "\nVẫn lưu token này?")) {
+    return { ok: false };
+  }
+  const name = typedName || r.username || "Tài khoản Discord";
+  return { ok: true, name, result: r };
+}
+
+async function saveAccount(token, typedName) {
+  const v = await verifyBeforeSave(token, typedName);
+  if (!v.ok) return false;
+  const id = await invoke("add_or_update_account", { name: v.name, token, accountId: null });
+  if (id) tokenStatus[id] = { state: v.result.status, msg: v.result.message, user: v.result.username, at: Date.now() };
+  toast(v.result.status === "valid" ? `Đã thêm “${v.name}”. Token còn hoạt động.` : "Đã thêm tài khoản.", "ok");
+  await loadConfig();
+  return true;
+}
+
+const STATUS_TEXT = { valid: "Còn hoạt động", invalid: "Token hỏng", checking: "Đang kiểm tra…", unknown: "Chưa xác định" };
+
+// Tài khoản chính: tài khoản đang chọn nếu được bật, nếu không thì tài khoản bật đầu tiên
+function primaryAccountId() {
+  const accs = (currentConfig && currentConfig.accounts) || [];
+  const enabled = accs.filter((a) => a.enabled);
+  if (enabled.some((a) => a.id === currentConfig.active_account_id)) return currentConfig.active_account_id;
+  return enabled.length ? enabled[0].id : null;
+}
+
 // 3. Render danh sách tài khoản
 function renderAccounts() {
   const container = document.getElementById("accounts-list");
@@ -88,36 +164,71 @@ function renderAccounts() {
     return;
   }
 
-  const activeId = currentConfig.active_account_id;
+  const primaryId = primaryAccountId();
+  const enabledCount = currentConfig.accounts.filter((a) => a.enabled).length;
+
   currentConfig.accounts.forEach((acc) => {
-    const isActive = acc.id === activeId;
+    const isPrimary = acc.id === primaryId;
+    const st = tokenStatus[acc.id] || { state: "unknown", msg: "Chạm để kiểm tra" };
     const card = document.createElement("div");
-    card.className = "row-card" + (isActive ? " active" : "");
+    card.className = "row-card" + (acc.enabled ? " active" : "") + (st.state === "invalid" ? " bad" : "");
 
     const masked = acc.token.length > 12 ? `${acc.token.slice(0, 6)}…${acc.token.slice(-4)}` : "••••••••";
     const initial = esc((acc.name || "?").trim().charAt(0).toUpperCase() || "?");
+    const label = STATUS_TEXT[st.state] || STATUS_TEXT.unknown;
+    const extra = st.state === "valid" && st.user ? ` · ${st.user}` : "";
+    const showPrimaryChip = acc.enabled && enabledCount > 1 && isPrimary;
+    const canMakePrimary = acc.enabled && enabledCount > 1 && !isPrimary;
 
     card.innerHTML = `
       <div class="avatar">${initial}</div>
       <div class="row-info">
-        <div class="row-title"><span class="t">${esc(acc.name)}</span>${isActive ? '<span class="chip">Đang dùng</span>' : ""}</div>
+        <div class="row-title"><span class="t">${esc(acc.name)}</span>${showPrimaryChip ? '<span class="chip">Chính</span>' : ""}</div>
         <div class="row-sub">${esc(masked)}</div>
+        <span class="status st-${esc(st.state)}" title="${esc(st.msg || "")}">${esc(label + extra)}</span>
       </div>
       <div class="row-actions">
-        ${!isActive ? `<button class="link-btn btn-select">Chọn</button>` : ""}
+        ${canMakePrimary ? `<button class="link-btn btn-make-primary">Đặt chính</button>` : ""}
+        <label class="switch" title="Chạy tài khoản này">
+          <input type="checkbox" class="acc-run" ${acc.enabled ? "checked" : ""}>
+          <span class="slider"></span>
+        </label>
         <button class="icon-btn danger btn-del" aria-label="Xóa">${ICON_TRASH}</button>
       </div>
     `;
 
-    card.querySelector(".btn-del").addEventListener("click", async () => {
-      if (!confirm(`Xóa tài khoản “${acc.name}”?`)) return;
-      await invoke("delete_account", { accountId: acc.id });
+    card.querySelector(".status").addEventListener("click", async () => {
+      await checkAccount(acc);
+      const s2 = tokenStatus[acc.id];
+      if (s2 && s2.msg) toast(s2.msg, s2.state === "valid" ? "ok" : s2.state === "invalid" ? "err" : undefined);
+    });
+
+    card.querySelector(".acc-run").addEventListener("change", async (e) => {
+      const want = e.target.checked;
+      if (want && tokenStatus[acc.id] && tokenStatus[acc.id].state === "invalid") {
+        toast("Token của tài khoản này đã hỏng, không thể bật.", "err");
+        e.target.checked = false;
+        return;
+      }
+      try {
+        await invoke("set_account_enabled", { accountId: acc.id, enabled: want });
+        if (currentStatus && currentStatus.is_running) toast("Áp dụng ở lần bấm Bắt đầu tiếp theo.", "ok");
+      } catch (err) {
+        toast(err, "err");
+      }
       await loadConfig();
     });
 
-    const selectBtn = card.querySelector(".btn-select");
-    if (selectBtn) {
-      selectBtn.addEventListener("click", async () => {
+    card.querySelector(".btn-del").addEventListener("click", async () => {
+      if (!confirm(`Xóa tài khoản “${acc.name}”?`)) return;
+      await invoke("delete_account", { accountId: acc.id });
+      delete tokenStatus[acc.id];
+      await loadConfig();
+    });
+
+    const mk = card.querySelector(".btn-make-primary");
+    if (mk) {
+      mk.addEventListener("click", async () => {
         await invoke("set_active_account", { accountId: acc.id });
         await loadConfig();
       });
@@ -172,6 +283,29 @@ function renderCategories() {
   });
 }
 
+const WORKER_TEXT = { starting: "Sắp bắt đầu", running: "Đang chạy", cooldown: "Tạm nghỉ", error: "Lỗi", stopped: "Đã dừng" };
+
+// Hiển thị trạng thái từng tài khoản đang chạy (chỉ khi có từ 2 tài khoản trở lên)
+function renderWorkers(workers) {
+  const box = document.getElementById("dash-workers");
+  if (!box) return;
+  if (workers.length < 2) {
+    box.innerHTML = "";
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = workers
+    .map(
+      (w) => `<div class="worker w-${esc(w.state)}" title="${esc(w.note || "")}">
+        <span class="w-name">${esc(w.name)}</span>
+        <span class="w-count">${Number(w.reactions || 0).toLocaleString("vi-VN")}</span>
+        <span class="w-state">${esc(WORKER_TEXT[w.state] || w.state)}${w.note && w.state !== "running" ? " · " + esc(w.note) : ""}</span>
+      </div>`
+    )
+    .join("");
+}
+
 // 5. Cập nhật trạng thái Bot (Polling)
 async function updateStatus() {
   try {
@@ -187,6 +321,8 @@ async function updateStatus() {
     dashReactions.textContent = (currentStatus.session_reactions || 0).toLocaleString("vi-VN");
     document.getElementById("dash-total").textContent = (currentStatus.total_reactions || 0).toLocaleString("vi-VN");
     dashChannels.textContent = (currentStatus.total_channels_scanned || 0).toLocaleString("vi-VN");
+
+    renderWorkers(currentStatus.workers || []);
 
     const running = !!currentStatus.is_running;
     badge.textContent = running ? "Đang chạy" : "Đã dừng";
@@ -204,6 +340,13 @@ btnToggle.addEventListener("click", async () => {
     await invoke("stop_bot");
     appendLog("Đã yêu cầu dừng bot.");
   } else {
+    const badAcc = ((currentConfig && currentConfig.accounts) || []).find(
+      (a) => a.enabled && tokenStatus[a.id] && tokenStatus[a.id].state === "invalid"
+    );
+    if (badAcc) {
+      toast(`Token của “${badAcc.name}” đã hỏng.\nHãy tắt hoặc thay token ở tab Tài khoản.`, "err");
+      return;
+    }
     try {
       appendLog("Đang khởi động bot...");
       await invoke("start_bot");
@@ -252,14 +395,16 @@ document.getElementById("btn-clear-log").addEventListener("click", async () => {
 
 // 8. Lưu Cài đặt & Bộ lọc
 document.getElementById("btn-save-settings").addEventListener("click", async () => {
-  const dMin = parseFloat(document.getElementById("cfg-delay").value) || 1.0;
-  const dMax = parseFloat(document.getElementById("cfg-delay-max").value) || dMin;
+  let delayMin = Math.max(0.5, parseFloat(document.getElementById("cfg-delay").value) || 1.0);
+  let delayMax = Math.max(0.5, parseFloat(document.getElementById("cfg-delay-max").value) || delayMin);
+  if (delayMax < delayMin) [delayMin, delayMax] = [delayMax, delayMin];
   const settings = {
-    delay: Math.min(dMin, dMax),
-    delay_max: Math.max(dMin, dMax),
+    delay: delayMin,
+    delay_max: delayMax,
     concurrent_channels: parseInt(document.getElementById("cfg-conc").value) || 4,
     skip_bot_messages: document.getElementById("cfg-skip-bots").checked,
     full_scan: document.getElementById("cfg-full-scan").checked,
+    scan_history: document.getElementById("cfg-scan-history").checked,
     max_messages_per_channel: null
   };
   const channelId = document.getElementById("cfg-es-channel").value.trim();
@@ -290,12 +435,6 @@ document.getElementById("btn-reset-prog").addEventListener("click", async () => 
   }
 });
 
-document.getElementById("btn-save-filters").addEventListener("click", async () => {
-  const white = document.getElementById("cfg-whitelist").value.split(",").map(s => s.trim()).filter(Boolean);
-  const black = document.getElementById("cfg-blacklist").value.split(",").map(s => s.trim()).filter(Boolean);
-  await invoke("update_emoji_filters", { whitelist: white, blacklist: black });
-  toast("Đã lưu bộ lọc Emoji thành công!");
-});
 
 // 9. Modals Account & Token Guide
 const modalAcc = document.getElementById("modal-account");
@@ -329,19 +468,22 @@ document.getElementById("btn-copy-script").addEventListener("click", async () =>
 
 // Nút "Dán từ Clipboard" ngoài màn hình danh sách tài khoản
 document.getElementById("btn-paste-clipboard").addEventListener("click", async () => {
+  let token = "";
   try {
-    const text = await navigator.clipboard.readText();
-    const token = text.trim();
-    if (!token || token.length < 20) {
-      toast("Bộ nhớ tạm không chứa Token Discord hợp lệ!\nHãy xem hướng dẫn lấy Token trước.");
-      return;
-    }
-    const name = prompt("Nhập tên gợi nhớ cho tài khoản:", "Tài khoản Discord") || "Tài khoản Discord";
-    await invoke("add_or_update_account", { name, token, accountId: null });
-    toast("Đã thêm tài khoản thành công!");
-    await loadConfig();
+    token = cleanToken(await navigator.clipboard.readText());
   } catch (e) {
-    toast("Không thể đọc bộ nhớ tạm: " + e + "\nVui lòng dùng nút '+ Thêm thủ công' và dán vào ô.");
+    toast("Không thể đọc bộ nhớ tạm.\nHãy dùng nút “Thêm tay” và dán vào ô.");
+    return;
+  }
+  if (!token || token.length < 20) {
+    toast("Bộ nhớ tạm không chứa token Discord hợp lệ.\nHãy xem hướng dẫn lấy token trước.");
+    return;
+  }
+  toast("Đang kiểm tra token…", "ok");
+  try {
+    await saveAccount(token, ""); // tên tự lấy theo tài khoản Discord
+  } catch (e) {
+    toast("Không thể thêm tài khoản: " + e);
   }
 });
 
@@ -350,7 +492,7 @@ document.getElementById("modal-acc-paste-btn").addEventListener("click", async (
   try {
     const text = await navigator.clipboard.readText();
     if (text) {
-      document.getElementById("modal-acc-token").value = text.trim();
+      document.getElementById("modal-acc-token").value = cleanToken(text);
     }
   } catch (e) {
     toast("Vui lòng chạm giữ vào ô và chọn Dán (Paste).");
@@ -364,15 +506,23 @@ document.getElementById("btn-open-add-acc").addEventListener("click", () => {
 });
 document.getElementById("modal-acc-cancel").addEventListener("click", () => modalAcc.classList.add("hidden"));
 document.getElementById("modal-acc-save").addEventListener("click", async () => {
-  const name = document.getElementById("modal-acc-name").value.trim() || "Tài khoản Discord";
-  const token = document.getElementById("modal-acc-token").value.trim();
+  const typedName = document.getElementById("modal-acc-name").value.trim();
+  const token = cleanToken(document.getElementById("modal-acc-token").value);
   if (!token) {
     toast("Vui lòng nhập Discord Token!");
     return;
   }
-  await invoke("add_or_update_account", { name, token, accountId: null });
-  modalAcc.classList.add("hidden");
-  await loadConfig();
+  const btn = document.getElementById("modal-acc-save");
+  btn.disabled = true;
+  btn.textContent = "Đang kiểm tra…";
+  try {
+    if (await saveAccount(token, typedName)) modalAcc.classList.add("hidden");
+  } catch (e) {
+    toast("Không thể thêm tài khoản: " + e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Lưu";
+  }
 });
 
 // 10. Modals Category
@@ -415,151 +565,6 @@ document.getElementById("modal-cat-save").addEventListener("click", async () => 
   await invoke("update_categories", { categories: currentConfig.categories });
   modalCat.classList.add("hidden");
   await loadConfig();
-});
-
-// ---- Channel Picker (Chọn Category & Kênh trực quan từ Server) ----
-const modalPicker = document.getElementById("modal-channel-picker");
-const pickerServerSelect = document.getElementById("picker-server-select");
-const pickerCategoriesList = document.getElementById("picker-categories-list");
-const pickerStatus = document.getElementById("picker-status");
-
-document.getElementById("btn-open-picker").addEventListener("click", async () => {
-  modalPicker.classList.remove("hidden");
-  await loadPickerServers();
-});
-
-document.getElementById("btn-close-channel-picker").addEventListener("click", () => {
-  modalPicker.classList.add("hidden");
-});
-
-document.getElementById("btn-refresh-servers").addEventListener("click", async () => {
-  await loadPickerServers();
-});
-
-async function loadPickerServers() {
-  pickerServerSelect.innerHTML = '<option value="">-- Đang tải danh sách server... --</option>';
-  pickerCategoriesList.innerHTML = "";
-  pickerStatus.style.display = "block";
-  pickerStatus.textContent = "Đang kết nối tới Discord để lấy danh sách server...";
-
-  try {
-    const guilds = await invoke("fetch_user_guilds");
-    if (!guilds || guilds.length === 0) {
-      pickerStatus.textContent = "Không tìm thấy server nào hoặc tài khoản chưa tham gia server nào.";
-      pickerServerSelect.innerHTML = '<option value="">(Không có server)</option>';
-      return;
-    }
-
-    pickerStatus.style.display = "none";
-    pickerServerSelect.innerHTML = '<option value="">-- Chọn Server (' + guilds.length + ') --</option>' +
-      guilds.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join("");
-  } catch (err) {
-    pickerStatus.style.display = "block";
-    pickerStatus.textContent = "Lỗi tải server: " + err;
-    pickerServerSelect.innerHTML = '<option value="">(Lỗi tải)</option>';
-    toast(err, "err");
-  }
-}
-
-pickerServerSelect.addEventListener("change", async () => {
-  const guildId = pickerServerSelect.value;
-  pickerCategoriesList.innerHTML = "";
-  if (!guildId) return;
-
-  pickerStatus.style.display = "block";
-  pickerStatus.textContent = "Đang tải danh mục và các kênh của server...";
-
-  try {
-    const channels = await invoke("fetch_guild_channels", { guildId });
-    pickerStatus.style.display = "none";
-
-    if (!channels || channels.length === 0) {
-      pickerCategoriesList.innerHTML = '<div class="empty">Server này không có kênh text nào.</div>';
-      return;
-    }
-
-    // Tách categories (channel_type === 4) và text channels (channel_type === 0)
-    const categories = channels.filter(c => c.channel_type === 4);
-    const textChannels = channels.filter(c => c.channel_type === 0);
-
-    if (categories.length === 0) {
-      pickerCategoriesList.innerHTML = '<div class="empty">Server này không chia danh mục (Category).</div>';
-      return;
-    }
-
-    categories.forEach(cat => {
-      const children = textChannels.filter(ch => ch.parent_id === cat.id);
-      const catCard = document.createElement("div");
-      catCard.className = "row-card";
-      catCard.style.flexDirection = "column";
-      catCard.style.alignItems = "stretch";
-      catCard.style.gap = "8px";
-
-      // Kiểm tra xem category này đã có trong cấu hình chưa
-      const isConfigured = (currentConfig?.categories || []).some(c => String(c.id) === String(cat.id));
-
-      let channelsHtml = children.map(ch => `
-        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text); padding:3px 0; cursor:pointer;">
-          <input type="checkbox" class="ch-check" data-id="${esc(ch.id)}" checked style="accent-color:var(--accent);">
-          <span># ${esc(ch.name || ch.id)}</span>
-        </label>
-      `).join("");
-
-      if (!channelsHtml) {
-        channelsHtml = '<div class="small text-muted" style="font-style:italic;">(Không có kênh text nào trong category này)</div>';
-      }
-
-      catCard.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:6px;">
-          <div>
-            <strong style="font-size:14px;">${esc(cat.name || "Danh mục")}</strong>
-            <div class="small text-muted">ID: ${esc(cat.id)} · ${children.length} kênh text</div>
-          </div>
-          <button class="btn btn-sm btn-primary btn-add-this-cat">
-            ${isConfigured ? "Cập nhật" : "+ Thêm"}
-          </button>
-        </div>
-        <div class="channels-box" style="display:flex; flex-direction:column; padding-left:4px;">
-          ${channelsHtml}
-        </div>
-      `;
-
-      // Nút thêm/cập nhật category
-      catCard.querySelector(".btn-add-this-cat").addEventListener("click", async () => {
-        // Thu thập các kênh không được tích (unchecked) làm excluded_channels
-        const excluded = [];
-        catCard.querySelectorAll(".ch-check").forEach(chk => {
-          if (!chk.checked) {
-            excluded.push(chk.getAttribute("data-id"));
-          }
-        });
-
-        const newCat = {
-          id: cat.id,
-          name: cat.name || ("Category " + cat.id),
-          excluded_channels: excluded
-        };
-
-        if (!currentConfig.categories) currentConfig.categories = [];
-        const existingIdx = currentConfig.categories.findIndex(c => String(c.id) === String(cat.id));
-        if (existingIdx >= 0) {
-          currentConfig.categories[existingIdx] = newCat;
-        } else {
-          currentConfig.categories.push(newCat);
-        }
-
-        await invoke("update_categories", { categories: currentConfig.categories });
-        toast(`Đã thêm “${cat.name}” (${children.length - excluded.length}/${children.length} kênh)!`, "ok");
-        renderCategories();
-      });
-
-      pickerCategoriesList.appendChild(catCard);
-    });
-  } catch (err) {
-    pickerStatus.style.display = "block";
-    pickerStatus.textContent = "Lỗi tải kênh: " + err;
-    toast(err, "err");
-  }
 });
 
 // Chạm nền mờ để đóng modal

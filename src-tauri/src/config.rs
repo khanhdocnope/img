@@ -1,10 +1,13 @@
-use crate::models::{Account, BotSettings, CategoryConfig, Config, EmojiSenderSettings, ProgressMap};
+use crate::models::{Account, BotSettings, CategoryConfig, ChannelProgress, Config, EmojiSenderSettings, ProgressMap};
 use parking_lot::RwLock;
 use std::fs;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Số tài khoản tối đa chạy song song (giữ thấp để giảm rủi ro rate limit và bị Discord để ý)
+pub const MAX_PARALLEL_ACCOUNTS: usize = 2;
 
 /// Thống kê trọn đời, lưu riêng để không mất khi đặt lại tiến trình quét
 #[derive(Default, Serialize, Deserialize)]
@@ -27,7 +30,15 @@ impl ConfigManager {
         let _ = fs::create_dir_all(&base_dir);
 
         let config_path = base_dir.join("config.json");
-        let initial_config = Self::load_config_from_file(&config_path);
+        let mut initial_config = Self::load_config_from_file(&config_path);
+        // Nâng cấp từ bản chỉ chạy một tài khoản: tài khoản đang chọn được coi là đã bật
+        if !initial_config.accounts.iter().any(|a| a.enabled) {
+            if let Some(id) = initial_config.active_account_id.clone() {
+                if let Some(acc) = initial_config.accounts.iter_mut().find(|a| a.id == id) {
+                    acc.enabled = true;
+                }
+            }
+        }
 
         let progress_path = base_dir.join("progress.json");
         let initial_progress = Self::load_progress_from_file(&progress_path);
@@ -108,10 +119,13 @@ impl ConfigManager {
                 existing.name = name;
                 existing.token = token;
             } else {
+                // Tài khoản đầu tiên tự động được bật
+                let is_first = cfg.accounts.is_empty();
                 cfg.accounts.push(Account {
                     id: id.clone(),
                     name,
                     token,
+                    enabled: is_first,
                 });
             }
             if cfg.active_account_id.is_none() {
@@ -186,6 +200,84 @@ impl ConfigManager {
     }
 
     // --- Progress ---
+    /// Các tài khoản sẽ chạy khi bấm Bắt đầu (tối đa MAX_PARALLEL_ACCOUNTS), tài khoản chính đứng đầu
+    pub fn get_running_accounts(&self) -> Vec<Account> {
+        let cfg = self.config.read();
+        let mut list: Vec<Account> = cfg.accounts.iter().filter(|a| a.enabled).cloned().collect();
+        if list.is_empty() {
+            if let Some(id) = cfg.active_account_id.as_deref() {
+                if let Some(a) = cfg.accounts.iter().find(|a| a.id == id) {
+                    list.push(a.clone());
+                }
+            }
+        }
+        if let Some(id) = cfg.active_account_id.as_deref() {
+            if let Some(pos) = list.iter().position(|a| a.id == id) {
+                let primary = list.remove(pos);
+                list.insert(0, primary);
+            }
+        }
+        list.truncate(MAX_PARALLEL_ACCOUNTS);
+        list
+    }
+
+    /// Bật/tắt một tài khoản khỏi danh sách chạy song song
+    pub fn set_account_enabled(&self, account_id: &str, enabled: bool) -> Result<(), String> {
+        {
+            let mut guard = self.config.write();
+            let cfg = &mut *guard;
+
+            let others_enabled = cfg
+                .accounts
+                .iter()
+                .filter(|a| a.enabled && a.id != account_id)
+                .count();
+            if enabled && others_enabled >= MAX_PARALLEL_ACCOUNTS {
+                return Err(format!(
+                    "Chỉ chạy song song tối đa {} tài khoản để giữ an toàn.",
+                    MAX_PARALLEL_ACCOUNTS
+                ));
+            }
+
+            let acc = cfg
+                .accounts
+                .iter_mut()
+                .find(|a| a.id == account_id)
+                .ok_or_else(|| "Không tìm thấy tài khoản.".to_string())?;
+            acc.enabled = enabled;
+
+            // Tài khoản chính bị tắt thì chuyển quyền chính sang tài khoản đang bật khác
+            let primary_off = !enabled && cfg.active_account_id.as_deref() == Some(account_id);
+            if primary_off || (enabled && cfg.active_account_id.is_none()) {
+                let next = cfg
+                    .accounts
+                    .iter()
+                    .find(|a| a.enabled)
+                    .map(|a| a.id.clone());
+                if let Some(id) = next {
+                    cfg.active_account_id = Some(id);
+                }
+            }
+        }
+        self.save_config()
+    }
+
+    /// Cập nhật tiến trình một kênh một cách nguyên tử (nhiều kênh/tài khoản chạy song song
+    /// không ghi đè lẫn nhau) và ghi file qua file tạm để không hỏng khi app bị tắt giữa chừng.
+    pub fn update_channel_progress<F: FnOnce(&mut ChannelProgress)>(&self, key: &str, name: &str, f: F) {
+        let mut map = self.progress.write();
+        let entry = map.entry(key.to_string()).or_default();
+        entry.name = name.to_string();
+        f(entry);
+        if let Ok(json) = serde_json::to_string_pretty(&*map) {
+            let path = self.base_dir.join("progress.json");
+            let tmp = self.base_dir.join("progress.json.tmp");
+            if fs::write(&tmp, json).is_ok() {
+                let _ = fs::rename(&tmp, &path);
+            }
+        }
+    }
+
     pub fn get_progress(&self) -> ProgressMap {
         self.progress.read().clone()
     }

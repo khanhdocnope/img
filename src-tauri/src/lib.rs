@@ -5,7 +5,7 @@ pub mod models;
 use config::ConfigManager;
 use discord::client::DiscordClient;
 use discord::engine::ReactorEngine;
-use models::{Account, BotSettings, CategoryConfig, Config, DiscordChannel, DiscordGuild, EmojiSenderSettings, EngineStatus};
+use models::{Account, BotSettings, CategoryConfig, Config, EmojiSenderSettings, EngineStatus, TokenCheck};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -39,6 +39,16 @@ fn add_or_update_account(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     state.config_mgr.add_or_update_account(name, token, account_id)
+}
+
+#[tauri::command]
+async fn check_token(token: String) -> TokenCheck {
+    crate::discord::client::DiscordClient::check_token(&token).await
+}
+
+#[tauri::command]
+fn set_account_enabled(account_id: String, enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    state.config_mgr.set_account_enabled(&account_id, enabled)
 }
 
 #[tauri::command]
@@ -91,47 +101,22 @@ fn clear_logs(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-async fn fetch_user_guilds(state: State<'_, AppState>) -> Result<Vec<DiscordGuild>, String> {
-    let account = state
-        .config_mgr
-        .get_active_account()
-        .ok_or_else(|| "Chưa chọn tài khoản hoặc chưa có Token!".to_string())?;
-
-    if account.token.trim().is_empty() {
-        return Err("Token của tài khoản đang chọn bị trống!".to_string());
-    }
-
-    let client = DiscordClient::new(account.token)?;
-    client.get_user_guilds().await
-}
-
-#[tauri::command]
-async fn fetch_guild_channels(guild_id: String, state: State<'_, AppState>) -> Result<Vec<DiscordChannel>, String> {
-    let account = state
-        .config_mgr
-        .get_active_account()
-        .ok_or_else(|| "Chưa chọn tài khoản hoặc chưa có Token!".to_string())?;
-
-    if account.token.trim().is_empty() {
-        return Err("Token của tài khoản đang chọn bị trống!".to_string());
-    }
-
-    let client = DiscordClient::new(account.token)?;
-    client.get_guild_channels(&guild_id).await
-}
-
-#[tauri::command]
 async fn start_bot(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let account = state
-        .config_mgr
-        .get_active_account()
-        .ok_or_else(|| "Chưa chọn tài khoản hoặc chưa có Token!".to_string())?;
-
-    if account.token.trim().is_empty() {
-        return Err("Token trống! Vui lòng nhập Discord Token.".to_string());
+    let accounts = state.config_mgr.get_running_accounts();
+    if accounts.is_empty() {
+        return Err("Chưa bật tài khoản nào! Hãy bật ít nhất một tài khoản ở tab Tài khoản.".to_string());
     }
 
-    let client = DiscordClient::new(account.token.clone())?;
+    // Mỗi tài khoản có client HTTP riêng, cùng gắn một bộ đếm phản hồi lỗi chung
+    let meter = state.engine.meter();
+    let mut pairs = Vec::new();
+    for acc in accounts {
+        if acc.token.trim().is_empty() {
+            return Err(format!("Token của “{}” đang trống! Vui lòng nhập Discord Token.", acc.name));
+        }
+        let client = DiscordClient::new(acc.token.trim().to_string())?.with_meter(meter.clone());
+        pairs.push((acc, client));
+    }
 
     let log_history = state.log_history.clone();
     let app_handle_clone = app_handle.clone();
@@ -149,7 +134,7 @@ async fn start_bot(app_handle: AppHandle, state: State<'_, AppState>) -> Result<
 
     state
         .engine
-        .start(client, account.name, state.config_mgr.clone(), on_log)
+        .start(pairs, state.config_mgr.clone(), on_log)
         .await;
 
     Ok(())
@@ -193,12 +178,12 @@ pub fn run() {
             update_categories,
             update_emoji_filters,
             update_emoji_sender,
+            check_token,
+            set_account_enabled,
             reset_progress,
             get_status,
             get_logs,
             clear_logs,
-            fetch_user_guilds,
-            fetch_guild_channels,
             start_bot,
             stop_bot,
         ])
