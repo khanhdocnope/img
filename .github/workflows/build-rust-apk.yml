@@ -46,6 +46,9 @@ jobs:
         run: |
           cargo tauri android init
 
+      - name: Thêm Foreground Service chạy nền
+        run: python3 scripts/patch_android.py
+
       - name: Biên dịch Android APK (Release - Tối ưu dung lượng và tốc độ)
         working-directory: src-tauri
         run: |

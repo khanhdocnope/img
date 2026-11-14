@@ -152,6 +152,11 @@ async function updateStatus() {
     currentStatus = await invoke("get_status");
     if (!currentStatus) return;
 
+    // Tắt Foreground Service khi bot đã dừng (kể cả tự dừng do lỗi token)
+    if (!currentStatus.is_running && window.AndroidBridge) {
+      try { window.AndroidBridge.stopService(); } catch (_) {}
+    }
+
     dashAccName.textContent = currentStatus.active_account_name || "Chưa chọn";
     dashReactions.textContent = currentStatus.session_reactions || 0;
     dashChannels.textContent = currentStatus.total_channels_scanned || 0;
@@ -181,6 +186,10 @@ btnToggle.addEventListener("click", async () => {
     try {
       appendLog("Đang khởi động bot...");
       await invoke("start_bot");
+      // Android: giữ app sống khi thoát ra màn hình chính
+      if (window.AndroidBridge) {
+        try { window.AndroidBridge.startService(); } catch (_) {}
+      }
     } catch (err) {
       appendLog("[LỖI] " + err);
       alert(err);

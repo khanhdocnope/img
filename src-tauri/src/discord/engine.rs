@@ -267,8 +267,11 @@ impl ReactorEngine {
 
         let mut new_reacted = 0u64;
         let mut last_message_id = None;
+        // Nếu có bất kỳ reaction nào lỗi thì KHÔNG đẩy tiến trình lên,
+        // để lượt quét sau quét lại và không bỏ sót tin nhắn.
+        let mut had_error = false;
 
-        for msg in messages {
+        'msgs: for msg in messages {
             if !is_running.load(Ordering::SeqCst) {
                 break;
             }
@@ -316,8 +319,14 @@ impl ReactorEngine {
                         // Forbidden
                     }
                     Err(err) => {
+                        had_error = true;
                         let timestamp = Local::now().format("%H:%M:%S");
                         on_log(format!("[{}] [!] Lỗi react tin nhắn {}: {}", timestamp, msg.id, err));
+                        if err.starts_with("NET:") {
+                            // Mất mạng: dừng kênh này, đợi mạng hồi phục rồi quét lại ở lượt sau
+                            sleep(Duration::from_secs(10)).await;
+                            break 'msgs;
+                        }
                     }
                 }
 
@@ -326,7 +335,7 @@ impl ReactorEngine {
             }
         }
 
-        if let Some(last_id_str) = last_message_id {
+        if let (false, Some(last_id_str)) = (had_error, last_message_id) {
             let mut p_map = config_mgr.get_progress();
             p_map.insert(
                 channel_id_str.to_string(),

@@ -37,6 +37,10 @@ impl DiscordClient {
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(10))
+            // Không tái dùng kết nối cũ: sau khi Android đóng băng app, kết nối trong pool đã chết
+            .pool_max_idle_per_host(0)
+            .tcp_keepalive(Duration::from_secs(30))
             .build()
             .map_err(|e| format!("Không thể khởi tạo HTTP Client: {}", e))?;
 
@@ -154,12 +158,18 @@ impl DiscordClient {
                 return Err("Đã vượt quá số lần thử lại tối đa do Rate Limit kéo dài.".to_string());
             }
 
-            let resp = self
-                .client
-                .put(&url)
-                .send()
-                .await
-                .map_err(|e| format!("Lỗi gửi reaction: {}", e))?;
+            let resp = match self.client.put(&url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    // Lỗi mạng (app vừa bị treo / mất mạng tạm thời): chờ rồi thử lại
+                    if attempts >= 6 {
+                        // Tiền tố NET: để engine biết đây là lỗi mạng, không bỏ qua tin nhắn
+                        return Err(format!("NET: Lỗi gửi reaction: {}", e));
+                    }
+                    sleep(Duration::from_secs((attempts as u64 * 3).min(15))).await;
+                    continue;
+                }
+            };
 
             let status = resp.status();
             if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::OK {
