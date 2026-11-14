@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: discord-reactor
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: AUTO_START
+        value: "false" # Đặt "true" nếu muốn bot tự động chạy lại khi khởi động
+      - key: BOT_CONFIG
+        sync: false # Dán JSON cấu hình vào đây trên Render để lưu vĩnh viễn không bao giờ mất

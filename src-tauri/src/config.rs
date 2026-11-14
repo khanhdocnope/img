@@ -67,6 +67,16 @@ impl ConfigManager {
                 }
             }
         }
+        // Đọc từ biến môi trường BOT_CONFIG (cho Render/Docker khi container khởi động lại)
+        if let Ok(env_val) = std::env::var("BOT_CONFIG") {
+            let trimmed = env_val.trim();
+            if !trimmed.is_empty() {
+                if let Ok(parsed) = serde_json::from_str::<Config>(trimmed) {
+                    let _ = fs::write(path, serde_json::to_string_pretty(&parsed).unwrap_or_default());
+                    return parsed;
+                }
+            }
+        }
         let default_config = Config::default();
         let _ = fs::write(path, serde_json::to_string_pretty(&default_config).unwrap_or_default());
         default_config

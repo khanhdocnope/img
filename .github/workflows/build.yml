@@ -1,4 +1,4 @@
-name: Build Windows EXE + Android APK
+name: Build Windows EXE + Android APK + Render Linux Server
 
 on:
   push:
@@ -22,9 +22,44 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "Discord Auto-Reactor ${{ env.RELEASE_TAG }}"
           body: |
-            ### Discord Auto-Reactor (Rust + Tauri v2)
+            ### Discord Auto-Reactor (Rust + Tauri v2 / Render Cloud)
             - **Android**: tải `DiscordReactor.apk` về điện thoại rồi mở để cài.
-            - **Windows**: dùng `DiscordReactor-setup.exe` để cài đặt, hoặc `DiscordReactor-portable.exe` để chạy thẳng không cần cài (cần WebView2, đã có sẵn trên Windows 10/11).
+            - **Windows**: dùng `DiscordReactor-setup.exe` để cài đặt, hoặc `DiscordReactor-portable.exe` để chạy thẳng không cần cài.
+            - **Render / Linux**: chạy trực tiếp file `discord-reactor-server` trên Linux/Docker hoặc deploy 1-click lên Render Free.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ───────────────────────── Linux Web Server (Render / Cloud) ─────────────────────────
+  build-server:
+    needs: [init-release]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-server
+
+      - name: Biên dịch Linux Web Server
+        working-directory: src-server
+        run: cargo build --release
+
+      - name: Gom file thực thi
+        run: |
+          mkdir -p dist
+          cp src-server/target/release/discord-reactor-server dist/discord-reactor-server
+          chmod +x dist/discord-reactor-server
+          ls -lh dist/
+
+      - name: Đăng Server Binary lên GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: dist/discord-reactor-server
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ───────────────────────── Android APK ─────────────────────────

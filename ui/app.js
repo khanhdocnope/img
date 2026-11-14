@@ -1,9 +1,19 @@
-// Khởi tạo cầu nối Tauri
+// Khởi tạo cầu nối: Tự động nhận diện Tauri (Desktop/Android) hoặc Web Server (Render/Cloud)
 const hasTauri = typeof window.__TAURI__ !== "undefined" && window.__TAURI__.core;
-const invoke = hasTauri ? window.__TAURI__.core.invoke : async (cmd, args) => {
-  console.log("[Mock Invoke]", cmd, args);
-  return null;
-};
+const invoke = hasTauri
+  ? window.__TAURI__.core.invoke
+  : async (cmd, args = {}) => {
+      const res = await fetch(`/api/invoke/${cmd}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args || {}),
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(errText || `Lỗi máy chủ (${res.status})`);
+      }
+      return await res.json().catch(() => null);
+    };
 
 // State toàn cục phía UI
 let currentConfig = null;
@@ -576,6 +586,38 @@ document.querySelectorAll(".modal-overlay").forEach((ov) => {
 if (hasTauri && window.__TAURI__.event) {
   window.__TAURI__.event.listen("log", (event) => {
     appendLog(event.payload);
+  });
+} else {
+  // Trình duyệt Web (Render/Cloud) -> Dùng Server-Sent Events (SSE) để nhận log trực tiếp
+  try {
+    const sse = new EventSource("/api/logs/stream");
+    sse.onmessage = (event) => {
+      if (event.data) {
+        try {
+          const parsed = JSON.parse(event.data);
+          appendLog(parsed);
+        } catch (_) {
+          appendLog(event.data);
+        }
+      }
+    };
+  } catch (err) {
+    console.warn("SSE error:", err);
+  }
+}
+
+// 12. Sao chép cấu hình JSON cho Render / Cloud
+const btnExportRender = document.getElementById("btn-export-render-config");
+if (btnExportRender) {
+  btnExportRender.addEventListener("click", async () => {
+    try {
+      const cfg = await invoke("get_config");
+      const jsonStr = JSON.stringify(cfg, null, 2);
+      await navigator.clipboard.writeText(jsonStr);
+      toast("Đã copy cấu hình JSON! Dán vào biến BOT_CONFIG trên Render.", "success");
+    } catch (e) {
+      toast("Không thể copy cấu hình: " + e, "err");
+    }
   });
 }
 
