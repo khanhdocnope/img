@@ -74,7 +74,7 @@ jobs:
           name: "Discord Auto-Reactor v1.0.0 (Android APK)"
           body: |
             ### Ứng dụng Discord Auto-Reactor cho Android (Rust Tauri v2)
-            - **Hiệu năng**: Viết bằng Rust 100%, tiêu thụ chỉ 15 - 35 MB RAM, không tốn pin khi chạy nền.
+            - **Hiệu năng**: Viết bằng Rust 100%, không tốn pin khi chạy nền.
             - **Cài đặt**: Tải file `DiscordReactor.apk` bên dưới về điện thoại và mở lên để cài đặt trực tiếp.
           files: release_apk/DiscordReactor.apk
           token: ${{ secrets.GITHUB_TOKEN }}

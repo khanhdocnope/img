@@ -1,4 +1,4 @@
-use crate::models::{DiscordChannel, DiscordMessage, DiscordUser};
+use crate::models::{DiscordChannel, DiscordMessage, DiscordUser, GuildEmoji};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use std::time::Duration;
@@ -13,6 +13,16 @@ struct RateLimitResponse {
     #[allow(dead_code)]
     pub message: Option<String>,
     pub retry_after: Option<f64>,
+}
+
+/// Kết quả gửi tin nhắn
+#[derive(Debug)]
+pub enum SendOutcome {
+    Sent,
+    /// Bị giới hạn tốc độ / slowmode: số giây cần chờ
+    RateLimited(f64),
+    /// Không có quyền nhắn trong kênh
+    Forbidden,
 }
 
 #[derive(Clone)]
@@ -136,6 +146,74 @@ impl DiscordClient {
         resp.json::<Vec<DiscordMessage>>()
             .await
             .map_err(|e| format!("Không thể parse tin nhắn kênh {}: {}", channel_id, e))
+    }
+
+    /// Lấy danh sách emoji tùy chỉnh của server
+    pub async fn get_guild_emojis(&self, guild_id: &str) -> Result<Vec<GuildEmoji>, String> {
+        let url = format!("{}/guilds/{}/emojis", BASE_URL, guild_id);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("NET: Lỗi kết nối get_guild_emojis: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Không thể lấy emoji của server {}: HTTP {}", guild_id, resp.status()));
+        }
+
+        resp.json::<Vec<GuildEmoji>>()
+            .await
+            .map_err(|e| format!("Không thể parse danh sách emoji server {}: {}", guild_id, e))
+    }
+
+    /// Gửi một tin nhắn văn bản vào kênh
+    pub async fn send_message(&self, channel_id: u64, content: &str) -> Result<SendOutcome, String> {
+        let url = format!("{}/channels/{}/messages", BASE_URL, channel_id);
+
+        // nonce dạng snowflake giống client Discord thật
+        const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(DISCORD_EPOCH_MS);
+        let nonce = (now_ms.saturating_sub(DISCORD_EPOCH_MS) << 22).to_string();
+
+        let body = serde_json::json!({
+            "content": content,
+            "nonce": nonce,
+            "tts": false,
+            "flags": 0
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("NET: Lỗi gửi tin nhắn: {}", e))?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(SendOutcome::Sent);
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = resp
+                .json::<RateLimitResponse>()
+                .await
+                .ok()
+                .and_then(|r| r.retry_after)
+                .unwrap_or(5.0);
+            return Ok(SendOutcome::RateLimited(retry_after));
+        }
+        if status == reqwest::StatusCode::FORBIDDEN {
+            return Ok(SendOutcome::Forbidden);
+        }
+
+        let err_body = resp.text().await.unwrap_or_default();
+        let snippet: String = err_body.chars().take(120).collect();
+        Err(format!("Lỗi HTTP {} khi gửi tin nhắn: {}", status, snippet))
     }
 
     /// Thêm reaction vào tin nhắn với cơ chế xử lý Rate Limit (429) lũy tiến tự động

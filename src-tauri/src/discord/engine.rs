@@ -1,10 +1,11 @@
 use crate::config::ConfigManager;
-use crate::discord::client::DiscordClient;
+use crate::discord::client::{DiscordClient, SendOutcome};
 use crate::models::{CategoryConfig, ChannelProgress, EngineStatus};
 use chrono::Local;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 
@@ -41,6 +42,7 @@ impl ReactorEngine {
         EngineStatus {
             is_running,
             session_reactions,
+            total_reactions: config_mgr.get_total_reactions(),
             total_channels_scanned,
             active_account_name,
         }
@@ -89,6 +91,14 @@ impl ReactorEngine {
                     return;
                 }
             }
+
+            // Luồng gửi emoji định kỳ chạy song song với luồng react
+            tokio::spawn(Self::run_emoji_sender(
+                client.clone(),
+                config_mgr.clone(),
+                is_running_clone.clone(),
+                on_log.clone(),
+            ));
 
             while is_running_clone.load(Ordering::SeqCst) {
                 let config = config_mgr.get_config();
@@ -144,8 +154,179 @@ impl ReactorEngine {
                 }
             }
 
+            config_mgr.save_stats();
             log("Bot đã dừng an toàn.".to_string());
         });
+    }
+
+
+    /// Bộ sinh số ngẫu nhiên xorshift64 (không cần thêm thư viện ngoài)
+    fn next_rand(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    /// Ngủ nhưng thoát sớm nếu người dùng bấm dừng
+    async fn sleep_while_running(secs: f64, flag: &AtomicBool) {
+        let mut left = secs;
+        while left > 0.0 && flag.load(Ordering::SeqCst) {
+            let step = left.min(1.0);
+            sleep(Duration::from_secs_f64(step)).await;
+            left -= step;
+        }
+    }
+
+    /// Tự động gửi ngẫu nhiên (không lặp trong 10 tin gần nhất) emoji của server vào một kênh cố định.
+    /// Đọc lại cấu hình ở mỗi vòng nên bật/tắt hoặc đổi kênh có hiệu lực ngay.
+    async fn run_emoji_sender(
+        client: DiscordClient,
+        config_mgr: ConfigManager,
+        is_running: Arc<AtomicBool>,
+        on_log: LogCallback,
+    ) {
+        let log = |msg: String| {
+            let timestamp = Local::now().format("%H:%M:%S");
+            on_log(format!("[{}] {}", timestamp, msg));
+        };
+
+        let mut cached_channel: Option<u64> = None;
+        let mut cached_animated = false;
+        let mut loaded_at: Option<Instant> = None;
+        let mut emojis: Vec<String> = Vec::new();
+        let mut sent_total: u64 = 0;
+        // Các emoji đã gửi gần nhất (mới nhất ở đầu) để tránh lặp trong 10 tin gần nhất
+        const RECENT_LIMIT: usize = 10;
+        let mut recent: VecDeque<String> = VecDeque::new();
+        let mut my_id: Option<String> = None;
+        let mut rng_state: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15)
+            | 1;
+
+        while is_running.load(Ordering::SeqCst) {
+            let cfg = config_mgr.get_config().emoji_sender;
+            let channel_id = match (cfg.enabled, cfg.channel_id.trim().parse::<u64>().ok()) {
+                (true, Some(id)) => id,
+                _ => {
+                    Self::sleep_while_running(3.0, &is_running).await;
+                    continue;
+                }
+            };
+
+            // Tải (lại) danh sách emoji khi đổi kênh, đổi tuỳ chọn động, hoặc quá hạn
+            let ttl = if emojis.is_empty() { 60 } else { 600 };
+            let need_reload = cached_channel != Some(channel_id)
+                || cached_animated != cfg.allow_animated
+                || loaded_at.map_or(true, |t| t.elapsed().as_secs() > ttl);
+
+            if need_reload {
+                let guild_id = match client.get_channel(channel_id).await {
+                    Ok(ch) => match ch.guild_id {
+                        Some(g) => g,
+                        None => {
+                            log("[Emoji] Kênh này không thuộc server nào, không có emoji để gửi.".to_string());
+                            Self::sleep_while_running(30.0, &is_running).await;
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        log(format!("[Emoji] {}", e));
+                        Self::sleep_while_running(15.0, &is_running).await;
+                        continue;
+                    }
+                };
+
+                match client.get_guild_emojis(&guild_id).await {
+                    Ok(list) => {
+                        emojis = list
+                            .into_iter()
+                            .filter(|e| e.available && (cfg.allow_animated || !e.animated))
+                            .filter_map(|e| {
+                                let name = e.name?;
+                                Some(if e.animated {
+                                    format!("<a:{}:{}>", name, e.id)
+                                } else {
+                                    format!("<:{}:{}>", name, e.id)
+                                })
+                            })
+                            .collect();
+                        cached_channel = Some(channel_id);
+                        cached_animated = cfg.allow_animated;
+                        loaded_at = Some(Instant::now());
+                        // Nạp lại 10 tin nhắn gần nhất của chính mình trong kênh (kể cả trước khi mở app)
+                        if my_id.is_none() {
+                            if let Ok(me) = client.get_me().await {
+                                my_id = Some(me.id);
+                            }
+                        }
+                        if let Some(uid) = &my_id {
+                            if let Ok(msgs) = client.get_messages(channel_id, 50, None).await {
+                                recent = msgs
+                                    .into_iter()
+                                    .filter(|m| &m.author.id == uid)
+                                    .take(RECENT_LIMIT)
+                                    .map(|m| m.content.trim().to_string())
+                                    .collect();
+                            }
+                        }
+                        log(format!(
+                            "[Emoji] Đã tải {} emoji {} của server.",
+                            emojis.len(),
+                            if cfg.allow_animated { "(gồm cả động)" } else { "tĩnh" }
+                        ));
+                    }
+                    Err(e) => {
+                        log(format!("[Emoji] {}", e));
+                        Self::sleep_while_running(15.0, &is_running).await;
+                        continue;
+                    }
+                }
+            }
+
+            if emojis.is_empty() {
+                log("[Emoji] Server không có emoji phù hợp. Thử lại sau 60s.".to_string());
+                Self::sleep_while_running(60.0, &is_running).await;
+                continue;
+            }
+
+            // Chọn ngẫu nhiên, loại các emoji đã gửi trong những tin gần nhất.
+            // Nếu server có ít emoji hơn 10 thì thu hẹp cửa sổ để vẫn còn lựa chọn.
+            let window = RECENT_LIMIT.min(emojis.len().saturating_sub(1));
+            let candidates: Vec<&String> = emojis
+                .iter()
+                .filter(|e| !recent.iter().take(window).any(|r| r == *e))
+                .collect();
+            let pool: Vec<&String> = if candidates.is_empty() { emojis.iter().collect() } else { candidates };
+            let emoji = pool[(Self::next_rand(&mut rng_state) % pool.len() as u64) as usize].clone();
+
+            match client.send_message(channel_id, &emoji).await {
+                Ok(SendOutcome::Sent) => {
+                    recent.push_front(emoji.clone());
+                    recent.truncate(RECENT_LIMIT);
+                    sent_total += 1;
+                    log(format!("[Emoji] Đã gửi {} (tổng: {})", emoji, sent_total));
+                    Self::sleep_while_running(cfg.interval_secs.max(1) as f64, &is_running).await;
+                }
+                Ok(SendOutcome::RateLimited(secs)) => {
+                    log(format!("[Emoji] Kênh đang giới hạn tốc độ, chờ {:.0}s...", secs + 0.5));
+                    Self::sleep_while_running(secs + 0.5, &is_running).await;
+                }
+                Ok(SendOutcome::Forbidden) => {
+                    log("[Emoji] [!] Không có quyền gửi tin nhắn vào kênh này. Thử lại sau 60s.".to_string());
+                    Self::sleep_while_running(60.0, &is_running).await;
+                }
+                Err(e) => {
+                    log(format!("[Emoji] [!] {}", e));
+                    let wait = if e.starts_with("NET:") { 10.0 } else { 30.0 };
+                    Self::sleep_while_running(wait, &is_running).await;
+                }
+            }
+        }
     }
 
     async fn process_category(
@@ -307,6 +488,7 @@ impl ReactorEngine {
                         new_reacted += 1;
                         total_reacted += 1;
                         session_reactions.fetch_add(1, Ordering::SeqCst);
+                        config_mgr.count_reaction();
                         last_message_id = Some(msg.id.clone());
 
                         let timestamp = Local::now().format("%H:%M:%S");
@@ -346,6 +528,10 @@ impl ReactorEngine {
                 },
             );
             let _ = config_mgr.save_progress(p_map);
+        }
+
+        if new_reacted > 0 {
+            config_mgr.save_stats();
         }
 
         new_reacted

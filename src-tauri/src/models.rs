@@ -1,6 +1,47 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// ID Discord (snowflake) lớn hơn 2^53 nên JavaScript làm tròn sai khi là số.
+/// Lưu/gửi dưới dạng chuỗi, nhưng vẫn đọc được file config cũ (dạng số).
+mod id_str {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumOrStr {
+        Num(u64),
+        Str(String),
+    }
+
+    impl NumOrStr {
+        fn into_u64<E: serde::de::Error>(self) -> Result<u64, E> {
+            match self {
+                NumOrStr::Num(n) => Ok(n),
+                NumOrStr::Str(s) => s.trim().parse::<u64>().map_err(E::custom),
+            }
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&v.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        NumOrStr::deserialize(d)?.into_u64()
+    }
+
+    pub fn ser_vec<S: Serializer>(v: &Vec<u64>, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(v.iter().map(|n| n.to_string()))
+    }
+
+    pub fn de_vec<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u64>, D::Error> {
+        Vec::<NumOrStr>::deserialize(d)?
+            .into_iter()
+            .map(|x| x.into_u64())
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
@@ -31,9 +72,56 @@ impl Default for BotSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CategoryConfig {
+    #[serde(with = "id_str")]
     pub id: u64,
     pub name: String,
+    #[serde(serialize_with = "id_str::ser_vec", deserialize_with = "id_str::de_vec")]
     pub excluded_channels: Vec<u64>,
+}
+
+/// Cấu hình tự động gửi emoji của server vào một kênh cố định.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmojiSenderSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// ID kênh (dạng chuỗi để không mất độ chính xác ở JS). Rỗng = chưa cấu hình.
+    #[serde(default)]
+    pub channel_id: String,
+    /// Chu kỳ gửi (giây), khớp với slowmode của kênh.
+    #[serde(default = "default_interval_secs")]
+    pub interval_secs: u64,
+    /// Cho phép gửi emoji động (GIF). Chỉ dùng được khi tài khoản có Nitro.
+    #[serde(default)]
+    pub allow_animated: bool,
+}
+
+fn default_interval_secs() -> u64 {
+    30
+}
+
+impl Default for EmojiSenderSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            channel_id: String::new(),
+            interval_secs: default_interval_secs(),
+            allow_animated: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GuildEmoji {
+    pub id: String,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub animated: bool,
+    #[serde(default = "default_true")]
+    pub available: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +132,8 @@ pub struct Config {
     pub categories: Vec<CategoryConfig>,
     pub emoji_whitelist: Vec<String>,
     pub emoji_blacklist: Vec<String>,
+    #[serde(default)]
+    pub emoji_sender: EmojiSenderSettings,
 }
 
 impl Default for Config {
@@ -71,6 +161,7 @@ impl Default for Config {
             }],
             emoji_whitelist: Vec::new(),
             emoji_blacklist: Vec::new(),
+            emoji_sender: EmojiSenderSettings::default(),
         }
     }
 }
@@ -88,6 +179,7 @@ pub type ProgressMap = HashMap<String, ChannelProgress>;
 pub struct EngineStatus {
     pub is_running: bool,
     pub session_reactions: u64,
+    pub total_reactions: u64,
     pub total_channels_scanned: usize,
     pub active_account_name: String,
 }
@@ -146,6 +238,8 @@ pub struct DiscordMessage {
     pub id: String,
     pub channel_id: String,
     pub author: DiscordUser,
+    #[serde(default)]
+    pub content: String,
     #[serde(default)]
     pub reactions: Vec<DiscordReactionItem>,
 }

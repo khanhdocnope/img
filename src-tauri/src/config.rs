@@ -1,14 +1,24 @@
-use crate::models::{Account, BotSettings, CategoryConfig, Config, ProgressMap};
+use crate::models::{Account, BotSettings, CategoryConfig, Config, EmojiSenderSettings, ProgressMap};
 use parking_lot::RwLock;
 use std::fs;
 use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Thống kê trọn đời, lưu riêng để không mất khi đặt lại tiến trình quét
+#[derive(Default, Serialize, Deserialize)]
+struct Stats {
+    #[serde(default)]
+    total_reactions: u64,
+}
 
 #[derive(Clone)]
 pub struct ConfigManager {
     base_dir: PathBuf,
     config: Arc<RwLock<Config>>,
     progress: Arc<RwLock<ProgressMap>>,
+    total_reactions: Arc<AtomicU64>,
 }
 
 impl ConfigManager {
@@ -22,10 +32,19 @@ impl ConfigManager {
         let progress_path = base_dir.join("progress.json");
         let initial_progress = Self::load_progress_from_file(&progress_path);
 
+        let stats_path = base_dir.join("stats.json");
+        let initial_total = fs::read_to_string(&stats_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<Stats>(&c).ok())
+            .map(|st| st.total_reactions)
+            // Lần đầu: lấy tạm tổng từ tiến trình đã quét trước đây để không bắt đầu từ 0
+            .unwrap_or_else(|| initial_progress.values().map(|c| c.total_reacted).sum());
+
         Self {
             base_dir,
             config: Arc::new(RwLock::new(initial_config)),
             progress: Arc::new(RwLock::new(initial_progress)),
+            total_reactions: Arc::new(AtomicU64::new(initial_total)),
         }
     }
 
@@ -136,6 +155,32 @@ impl ConfigManager {
             let mut cfg = self.config.write();
             cfg.emoji_whitelist = whitelist;
             cfg.emoji_blacklist = blacklist;
+        }
+        self.save_config()
+    }
+
+    /// Cộng thêm 1 reaction vào tổng trọn đời (chỉ trong bộ nhớ, ghi file ở save_stats)
+    pub fn count_reaction(&self) {
+        self.total_reactions.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn get_total_reactions(&self) -> u64 {
+        self.total_reactions.load(Ordering::SeqCst)
+    }
+
+    pub fn save_stats(&self) {
+        let stats = Stats {
+            total_reactions: self.get_total_reactions(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&stats) {
+            let _ = fs::write(self.base_dir.join("stats.json"), json);
+        }
+    }
+
+    pub fn update_emoji_sender(&self, settings: EmojiSenderSettings) -> Result<(), String> {
+        {
+            let mut cfg = self.config.write();
+            cfg.emoji_sender = settings;
         }
         self.save_config()
     }

@@ -7,7 +7,7 @@ const invoke = hasTauri ? window.__TAURI__.core.invoke : async (cmd, args) => {
 
 // State toàn cục phía UI
 let currentConfig = null;
-let currentStatus = { is_running: false, session_reactions: 0, total_channels_scanned: 0, active_account_name: "" };
+let currentStatus = { is_running: false, session_reactions: 0, total_reactions: 0, total_channels_scanned: 0, active_account_name: "" };
 let editingCatIndex = null;
 
 // DOM Elements
@@ -22,7 +22,7 @@ const logTerminal = document.getElementById("log-terminal");
 document.querySelectorAll(".nav-item").forEach(btn => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".tab-screen").forEach(s => s.classList.remove("active"));
+    document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
     
     btn.classList.add("active");
     const targetId = btn.getAttribute("data-tab");
@@ -43,6 +43,13 @@ async function loadConfig() {
     document.getElementById("cfg-skip-bots").checked = currentConfig.bot_settings.skip_bot_messages;
     document.getElementById("cfg-full-scan").checked = currentConfig.bot_settings.full_scan;
 
+    // Gửi emoji tự động
+    const es = currentConfig.emoji_sender || {};
+    document.getElementById("cfg-es-enabled").checked = !!es.enabled;
+    document.getElementById("cfg-es-channel").value = es.channel_id || "";
+    document.getElementById("cfg-es-interval").value = es.interval_secs || 30;
+    document.getElementById("cfg-es-animated").checked = !!es.allow_animated;
+
     // Filters
     document.getElementById("cfg-whitelist").value = (currentConfig.emoji_whitelist || []).join(", ");
     document.getElementById("cfg-blacklist").value = (currentConfig.emoji_blacklist || []).join(", ");
@@ -54,35 +61,55 @@ async function loadConfig() {
   }
 }
 
+// ---- Tiện ích UI ----
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const ICON_EDIT = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5"/></svg>';
+
+const toastEl = document.getElementById("toast");
+let toastTimer = null;
+function toast(msg, type) {
+  const text = String(msg ?? "");
+  if (!type) type = /lỗi|không|vui lòng|error/i.test(text) ? "err" : "ok";
+  toastEl.textContent = text;
+  toastEl.className = "toast show " + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2800);
+}
+
 // 3. Render danh sách tài khoản
 function renderAccounts() {
   const container = document.getElementById("accounts-list");
   container.innerHTML = "";
   if (!currentConfig || !currentConfig.accounts || currentConfig.accounts.length === 0) {
-    container.innerHTML = `<div class="card text-muted">Chưa có tài khoản nào. Bấm "+ Thêm tài khoản" ở trên.</div>`;
+    container.innerHTML = `<div class="empty">Chưa có tài khoản nào.<br>Bấm “Dán token” để thêm.</div>`;
     return;
   }
 
   const activeId = currentConfig.active_account_id;
-  currentConfig.accounts.forEach(acc => {
+  currentConfig.accounts.forEach((acc) => {
     const isActive = acc.id === activeId;
     const card = document.createElement("div");
-    card.className = "item-card";
-    
-    const masked = acc.token.length > 12 ? `${acc.token.slice(0, 6)}...${acc.token.slice(-4)}` : "********";
-    
+    card.className = "row-card" + (isActive ? " active" : "");
+
+    const masked = acc.token.length > 12 ? `${acc.token.slice(0, 6)}…${acc.token.slice(-4)}` : "••••••••";
+    const initial = esc((acc.name || "?").trim().charAt(0).toUpperCase() || "?");
+
     card.innerHTML = `
-      <div class="item-info">
-        <div class="item-title">${isActive ? '<span style="color:var(--accent-green)">[KÍCH HOẠT] </span>' : ''}${acc.name}</div>
-        <div class="item-subtitle">${masked}</div>
+      <div class="avatar">${initial}</div>
+      <div class="row-info">
+        <div class="row-title"><span class="t">${esc(acc.name)}</span>${isActive ? '<span class="chip">Đang dùng</span>' : ""}</div>
+        <div class="row-sub">${esc(masked)}</div>
       </div>
-      <div class="item-actions">
-        ${!isActive ? `<button class="btn btn-sm btn-primary btn-select" data-id="${acc.id}">Chọn</button>` : ''}
-        <button class="btn btn-sm btn-danger btn-del" data-id="${acc.id}">Xóa</button>
+      <div class="row-actions">
+        ${!isActive ? `<button class="link-btn btn-select">Chọn</button>` : ""}
+        <button class="icon-btn danger btn-del" aria-label="Xóa">${ICON_TRASH}</button>
       </div>
     `;
 
     card.querySelector(".btn-del").addEventListener("click", async () => {
+      if (!confirm(`Xóa tài khoản “${acc.name}”?`)) return;
       await invoke("delete_account", { accountId: acc.id });
       await loadConfig();
     });
@@ -104,30 +131,28 @@ function renderCategories() {
   const container = document.getElementById("categories-list");
   container.innerHTML = "";
   if (!currentConfig || !currentConfig.categories || currentConfig.categories.length === 0) {
-    container.innerHTML = `<div class="card text-muted">Chưa có Category nào. Bấm "+ Thêm Category".</div>`;
+    container.innerHTML = `<div class="empty">Chưa có danh mục nào.<br>Bấm “Thêm” để bắt đầu.</div>`;
     return;
   }
 
   currentConfig.categories.forEach((cat, idx) => {
     const card = document.createElement("div");
-    card.className = "card";
-    card.style.display = "flex";
-    card.style.flexDirection = "column";
-    card.style.gap = "8px";
+    card.className = "row-card";
 
     const excCount = (cat.excluded_channels || []).length;
     card.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <strong>${cat.name} (ID: ${cat.id})</strong>
-        <div style="display:flex; gap:6px;">
-          <button class="btn btn-sm btn-primary btn-edit-cat" data-idx="${idx}">Sửa</button>
-          <button class="btn btn-sm btn-danger btn-del-cat" data-idx="${idx}">Xóa</button>
-        </div>
+      <div class="row-info">
+        <div class="row-title"><span class="t">${esc(cat.name)}</span></div>
+        <div class="row-sub">${esc(cat.id)} · ${excCount ? excCount + " kênh loại trừ" : "không loại trừ"}</div>
       </div>
-      <div class="text-muted small">Kênh loại trừ (${excCount}): ${(cat.excluded_channels || []).join(", ") || "(Không)"}</div>
+      <div class="row-actions">
+        <button class="icon-btn btn-edit-cat" aria-label="Sửa">${ICON_EDIT}</button>
+        <button class="icon-btn danger btn-del-cat" aria-label="Xóa">${ICON_TRASH}</button>
+      </div>
     `;
 
     card.querySelector(".btn-del-cat").addEventListener("click", async () => {
+      if (!confirm(`Xóa danh mục “${cat.name}”?`)) return;
       currentConfig.categories.splice(idx, 1);
       await invoke("update_categories", { categories: currentConfig.categories });
       await loadConfig();
@@ -135,7 +160,7 @@ function renderCategories() {
 
     card.querySelector(".btn-edit-cat").addEventListener("click", () => {
       editingCatIndex = idx;
-      document.getElementById("modal-cat-title").textContent = "Sửa Category";
+      document.getElementById("modal-cat-title").textContent = "Sửa danh mục";
       document.getElementById("modal-cat-name").value = cat.name;
       document.getElementById("modal-cat-id").value = cat.id;
       document.getElementById("modal-cat-excluded").value = (cat.excluded_channels || []).join(", ");
@@ -158,20 +183,15 @@ async function updateStatus() {
     }
 
     dashAccName.textContent = currentStatus.active_account_name || "Chưa chọn";
-    dashReactions.textContent = currentStatus.session_reactions || 0;
-    dashChannels.textContent = currentStatus.total_channels_scanned || 0;
+    dashReactions.textContent = (currentStatus.session_reactions || 0).toLocaleString("vi-VN");
+    document.getElementById("dash-total").textContent = (currentStatus.total_reactions || 0).toLocaleString("vi-VN");
+    dashChannels.textContent = (currentStatus.total_channels_scanned || 0).toLocaleString("vi-VN");
 
-    if (currentStatus.is_running) {
-      badge.textContent = "● ĐANG CHẠY";
-      badge.className = "badge badge-running";
-      btnToggle.textContent = "DỪNG HOẠT ĐỘNG";
-      btnToggle.className = "btn btn-danger btn-large btn-block";
-    } else {
-      badge.textContent = "● ĐÃ DỪNG";
-      badge.className = "badge badge-stopped";
-      btnToggle.textContent = "BẮT ĐẦU CHẠY BOT";
-      btnToggle.className = "btn btn-success btn-large btn-block";
-    }
+    const running = !!currentStatus.is_running;
+    badge.textContent = running ? "Đang chạy" : "Đã dừng";
+    badge.className = "badge " + (running ? "badge-running" : "badge-stopped");
+    btnToggle.textContent = running ? "Dừng hoạt động" : "Bắt đầu chạy";
+    btnToggle.className = "btn btn-large btn-block " + (running ? "btn-stop" : "btn-start");
   } catch (e) {
     console.error("Lỗi cập nhật trạng thái:", e);
   }
@@ -192,25 +212,41 @@ btnToggle.addEventListener("click", async () => {
       }
     } catch (err) {
       appendLog("[LỖI] " + err);
-      alert(err);
+      toast(err, "err");
     }
   }
   await updateStatus();
 });
 
-// 7. Thêm dòng log vào Terminal
+// 7. Thêm dòng log vào Terminal (tô màu theo mức độ, giới hạn số dòng để không phình RAM khi chạy nền)
+const MAX_LOG_LINES = 400;
 function appendLog(text) {
+  const nearBottom = logTerminal.scrollHeight - logTerminal.scrollTop - logTerminal.clientHeight < 48;
+  const m = /^\[(\d{2}:\d{2}:\d{2})\]\s*([\s\S]*)$/.exec(String(text));
+  const ts = m ? m[1] : "";
+  const body = m ? m[2] : String(text);
+
   const div = document.createElement("div");
   div.className = "log-line";
-  div.textContent = text;
+  if (/\[LỖI\]|\[!\]|lỗi/i.test(body)) div.classList.add("err");
+  else if (/thành công|hoàn thành|bắt đầu hoạt động/i.test(body)) div.classList.add("ok");
+
+  const tsEl = document.createElement("span");
+  tsEl.className = "ts";
+  tsEl.textContent = ts || "--:--:--";
+  const msgEl = document.createElement("span");
+  msgEl.textContent = body;
+  div.append(tsEl, msgEl);
   logTerminal.appendChild(div);
-  logTerminal.scrollTop = logTerminal.scrollHeight;
+
+  while (logTerminal.childElementCount > MAX_LOG_LINES) logTerminal.removeChild(logTerminal.firstChild);
+  if (nearBottom) logTerminal.scrollTop = logTerminal.scrollHeight;
 }
 
 // Xóa log
 document.getElementById("btn-clear-log").addEventListener("click", async () => {
   await invoke("clear_logs");
-  logTerminal.innerHTML = '<div class="log-line text-muted">[00:00:00] Đã xóa nhật ký.</div>';
+  logTerminal.innerHTML = '<div class="log-line muted"><span class="ts">--:--:--</span><span>Đã xóa nhật ký.</span></div>';
 });
 
 // 8. Lưu Cài đặt & Bộ lọc
@@ -222,14 +258,31 @@ document.getElementById("btn-save-settings").addEventListener("click", async () 
     full_scan: document.getElementById("cfg-full-scan").checked,
     max_messages_per_channel: null
   };
+  const channelId = document.getElementById("cfg-es-channel").value.trim();
+  const enabled = document.getElementById("cfg-es-enabled").checked;
+  if (channelId && !/^\d{15,25}$/.test(channelId)) {
+    toast("ID kênh không hợp lệ (chỉ gồm chữ số).", "err");
+    return;
+  }
+  if (enabled && !channelId) {
+    toast("Vui lòng nhập ID kênh để bật gửi emoji.", "err");
+    return;
+  }
+  const sender = {
+    enabled,
+    channel_id: channelId,
+    interval_secs: Math.max(1, parseInt(document.getElementById("cfg-es-interval").value) || 30),
+    allow_animated: document.getElementById("cfg-es-animated").checked
+  };
   await invoke("update_bot_settings", { settings });
-  alert("Đã lưu cài đặt tham số thành công!");
+  await invoke("update_emoji_sender", { settings: sender });
+  toast("Đã lưu cài đặt.");
 });
 
 document.getElementById("btn-reset-prog").addEventListener("click", async () => {
   if (confirm("Bạn có chắc chắn muốn xóa tiến trình đã quét để bot quét lại từ đầu?")) {
     await invoke("reset_progress");
-    alert("Đã đặt lại tiến trình quét!");
+    toast("Đã đặt lại tiến trình quét!");
   }
 });
 
@@ -237,7 +290,7 @@ document.getElementById("btn-save-filters").addEventListener("click", async () =
   const white = document.getElementById("cfg-whitelist").value.split(",").map(s => s.trim()).filter(Boolean);
   const black = document.getElementById("cfg-blacklist").value.split(",").map(s => s.trim()).filter(Boolean);
   await invoke("update_emoji_filters", { whitelist: white, blacklist: black });
-  alert("Đã lưu bộ lọc Emoji thành công!");
+  toast("Đã lưu bộ lọc Emoji thành công!");
 });
 
 // 9. Modals Account & Token Guide
@@ -253,20 +306,20 @@ document.getElementById("btn-close-token-guide").addEventListener("click", () =>
 });
 
 // Sao chép đoạn mã JavaScript lấy token
-const BOOKMARKLET_SCRIPT = `javascript:(function(){try{window.webpackChunkdiscord_app.push([[''],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]);const t=m.find(m=>m?.exports?.default?.getToken!==void 0).exports.default.getToken();if(t){navigator.clipboard.writeText(t);alert("ĐÃ COPY TOKEN VÀO BỘ NHỚ TẠM!\\n\\nHãy mở lại App và bấm 'Dán từ Clipboard'.");}else{alert("Không tìm thấy Token. Hãy đảm bảo bạn đã đăng nhập Discord thành công trên trang web này.");}}catch(e){alert("Lỗi: "+e.message);}})();`;
+const BOOKMARKLET_SCRIPT = `javascript:(function(){try{window.webpackChunkdiscord_app.push([[''],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]);const t=m.find(m=>m?.exports?.default?.getToken!==void 0).exports.default.getToken();if(t){navigator.clipboard.writeText(t);alert("ĐÃ COPY TOKEN VÀO BỘ NHỚ TẠM!\\n\\nHãy mở lại App và bấm 'Dán token'.");}else{alert("Không tìm thấy Token. Hãy đảm bảo bạn đã đăng nhập Discord thành công trên trang web này.");}}catch(e){alert("Lỗi: "+e.message);}})();`;
 
 document.getElementById("btn-copy-script").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(BOOKMARKLET_SCRIPT);
     const btn = document.getElementById("btn-copy-script");
-    btn.textContent = "✅ ĐÃ SAO CHÉP MÃ VÀO BỘ NHỚ TẠM!";
+    btn.textContent = "Đã sao chép";
     btn.className = "btn btn-success btn-block";
     setTimeout(() => {
-      btn.textContent = "📋 Sao chép mã lấy Token";
+      btn.textContent = "Sao chép mã lấy token";
       btn.className = "btn btn-primary btn-block";
     }, 2500);
   } catch (e) {
-    alert("Không thể tự động sao chép: " + e);
+    toast("Không thể tự động sao chép: " + e);
   }
 });
 
@@ -276,15 +329,15 @@ document.getElementById("btn-paste-clipboard").addEventListener("click", async (
     const text = await navigator.clipboard.readText();
     const token = text.trim();
     if (!token || token.length < 20) {
-      alert("Bộ nhớ tạm không chứa Token Discord hợp lệ!\nHãy xem hướng dẫn lấy Token trước.");
+      toast("Bộ nhớ tạm không chứa Token Discord hợp lệ!\nHãy xem hướng dẫn lấy Token trước.");
       return;
     }
     const name = prompt("Nhập tên gợi nhớ cho tài khoản:", "Tài khoản Discord") || "Tài khoản Discord";
     await invoke("add_or_update_account", { name, token, accountId: null });
-    alert("Đã thêm tài khoản thành công!");
+    toast("Đã thêm tài khoản thành công!");
     await loadConfig();
   } catch (e) {
-    alert("Không thể đọc bộ nhớ tạm: " + e + "\nVui lòng dùng nút '+ Thêm thủ công' và dán vào ô.");
+    toast("Không thể đọc bộ nhớ tạm: " + e + "\nVui lòng dùng nút '+ Thêm thủ công' và dán vào ô.");
   }
 });
 
@@ -296,7 +349,7 @@ document.getElementById("modal-acc-paste-btn").addEventListener("click", async (
       document.getElementById("modal-acc-token").value = text.trim();
     }
   } catch (e) {
-    alert("Vui lòng chạm giữ vào ô và chọn Dán (Paste).");
+    toast("Vui lòng chạm giữ vào ô và chọn Dán (Paste).");
   }
 });
 
@@ -310,7 +363,7 @@ document.getElementById("modal-acc-save").addEventListener("click", async () => 
   const name = document.getElementById("modal-acc-name").value.trim() || "Tài khoản Discord";
   const token = document.getElementById("modal-acc-token").value.trim();
   if (!token) {
-    alert("Vui lòng nhập Discord Token!");
+    toast("Vui lòng nhập Discord Token!");
     return;
   }
   await invoke("add_or_update_account", { name, token, accountId: null });
@@ -322,7 +375,7 @@ document.getElementById("modal-acc-save").addEventListener("click", async () => 
 const modalCat = document.getElementById("modal-category");
 document.getElementById("btn-open-add-cat").addEventListener("click", () => {
   editingCatIndex = null;
-  document.getElementById("modal-cat-title").textContent = "Thêm Category";
+  document.getElementById("modal-cat-title").textContent = "Thêm danh mục";
   document.getElementById("modal-cat-name").value = "";
   document.getElementById("modal-cat-id").value = "";
   document.getElementById("modal-cat-excluded").value = "";
@@ -333,14 +386,19 @@ document.getElementById("modal-cat-save").addEventListener("click", async () => 
   const name = document.getElementById("modal-cat-name").value.trim() || "Category";
   const rawId = document.getElementById("modal-cat-id").value.trim();
   if (!rawId) {
-    alert("Vui lòng nhập Category ID!");
+    toast("Vui lòng nhập Category ID!");
     return;
   }
-  const id = parseInt(rawId);
+  if (!/^\d+$/.test(rawId)) {
+    toast("Category ID chỉ gồm chữ số.", "err");
+    return;
+  }
+  // Giữ ID dạng chuỗi: số snowflake lớn hơn 2^53 sẽ bị JS làm tròn sai
+  const id = rawId;
   const excluded = document.getElementById("modal-cat-excluded").value
     .split(",")
-    .map(s => parseInt(s.trim()))
-    .filter(n => !isNaN(n));
+    .map(s => s.trim())
+    .filter(v => /^\d+$/.test(v));
 
   const catObj = { id, name, excluded_channels: excluded };
 
@@ -353,6 +411,11 @@ document.getElementById("modal-cat-save").addEventListener("click", async () => 
   await invoke("update_categories", { categories: currentConfig.categories });
   modalCat.classList.add("hidden");
   await loadConfig();
+});
+
+// Chạm nền mờ để đóng modal
+document.querySelectorAll(".modal-overlay").forEach((ov) => {
+  ov.addEventListener("click", (e) => { if (e.target === ov) ov.classList.add("hidden"); });
 });
 
 // 11. Đăng ký lắng nghe sự kiện Log từ Rust

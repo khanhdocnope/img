@@ -5,7 +5,7 @@ pub mod models;
 use config::ConfigManager;
 use discord::client::DiscordClient;
 use discord::engine::ReactorEngine;
-use models::{Account, BotSettings, CategoryConfig, Config, EngineStatus};
+use models::{Account, BotSettings, CategoryConfig, Config, EmojiSenderSettings, EngineStatus};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -63,6 +63,11 @@ fn update_emoji_filters(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.config_mgr.update_emoji_filters(whitelist, blacklist)
+}
+
+#[tauri::command]
+fn update_emoji_sender(settings: EmojiSenderSettings, state: State<'_, AppState>) -> Result<(), String> {
+    state.config_mgr.update_emoji_sender(settings)
 }
 
 #[tauri::command]
@@ -157,6 +162,7 @@ pub fn run() {
             update_bot_settings,
             update_categories,
             update_emoji_filters,
+            update_emoji_sender,
             reset_progress,
             get_status,
             get_logs,
