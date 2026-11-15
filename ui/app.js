@@ -102,6 +102,7 @@ async function loadConfig() {
 
     // Tự động Đánh Boss
     document.getElementById("cfg-auto-button").checked = currentConfig.bot_settings.auto_button_enabled !== false;
+    document.getElementById("cfg-btn-channel").value = currentConfig.bot_settings.button_channel_id || "";
     document.getElementById("cfg-btn-label").value = currentConfig.bot_settings.button_label_keyword || "Đánh Boss";
     document.getElementById("cfg-btn-emoji").value = currentConfig.bot_settings.button_emoji_keyword || "⚔️";
 
@@ -529,6 +530,7 @@ document.getElementById("btn-save-settings").addEventListener("click", async () 
     full_scan: document.getElementById("cfg-full-scan").checked,
     resume_progress: document.getElementById("cfg-resume-prog").checked,
     auto_button_enabled: document.getElementById("cfg-auto-button").checked,
+    button_channel_id: document.getElementById("cfg-btn-channel").value.trim(),
     button_label_keyword: document.getElementById("cfg-btn-label").value.trim(),
     button_emoji_keyword: document.getElementById("cfg-btn-emoji").value.trim(),
     scan_history: false,

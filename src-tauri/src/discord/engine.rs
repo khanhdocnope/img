@@ -408,6 +408,12 @@ impl ReactorEngine {
             emoji_note,
         ));
 
+        // Luồng chuyên canh kênh đánh Boss riêng (chạy song song real-time)
+        let ctx_boss = ctx.clone();
+        tokio::spawn(async move {
+            Self::run_boss_watcher(ctx_boss).await;
+        });
+
         while ctx.alive() {
             // Tạm nghỉ khi bị rate limit kéo dài
             let cool = ctx.cooldown_left();
@@ -504,6 +510,81 @@ impl ReactorEngine {
             let step = left.min(1.0);
             sleep(Duration::from_secs_f64(step)).await;
             left -= step;
+        }
+    }
+
+    /// Luồng chuyên canh kênh đánh Boss độc lập (real-time, không bị ảnh hưởng bởi việc quét reaction)
+    async fn run_boss_watcher(ctx: Arc<WorkerCtx>) {
+        let mut cached_channel_id: Option<u64> = None;
+        let mut cached_guild_id: Option<String> = None;
+        let mut cached_channel_name = String::new();
+
+        while ctx.alive() {
+            let config = ctx.config_mgr.get_config();
+            let settings = config.bot_settings;
+
+            if !settings.auto_button_enabled {
+                Self::sleep_while_running(3.0, &ctx.run).await;
+                continue;
+            }
+
+            let ch_str = settings.button_channel_id.trim();
+            if ch_str.is_empty() {
+                Self::sleep_while_running(3.0, &ctx.run).await;
+                continue;
+            }
+
+            let ch_id: u64 = match ch_str.parse() {
+                Ok(id) => id,
+                Err(_) => {
+                    Self::sleep_while_running(5.0, &ctx.run).await;
+                    continue;
+                }
+            };
+
+            // Nếu đổi kênh hoặc chưa nạp thông tin kênh
+            if cached_channel_id != Some(ch_id) {
+                match ctx.client.get_channel(ch_id).await {
+                    Ok(ch) => {
+                        cached_guild_id = ch.guild_id.clone();
+                        cached_channel_name = ch.name.unwrap_or_else(|| ch_id.to_string());
+                        cached_channel_id = Some(ch_id);
+                        ctx.log(format!(
+                            "[⚔️ Boss Watcher] 🎯 Bắt đầu canh kênh Boss riêng: #{} ({})",
+                            cached_channel_name, ch_id
+                        ));
+                    }
+                    Err(e) => {
+                        ctx.log(format!("[⚔️ Boss Watcher] Không thể đọc thông tin kênh boss {}: {}", ch_id, e));
+                        Self::sleep_while_running(15.0, &ctx.run).await;
+                        continue;
+                    }
+                }
+            }
+
+            let gid = match &cached_guild_id {
+                Some(g) => g.clone(),
+                None => {
+                    Self::sleep_while_running(10.0, &ctx.run).await;
+                    continue;
+                }
+            };
+
+            // Lấy 5 tin nhắn mới nhất trên cùng của kênh
+            match ctx.client.get_messages_before(ch_id, 5, None).await {
+                Ok(msgs) => {
+                    Self::check_and_click_buttons(&ctx, &gid, ch_id, &cached_channel_name, &msgs, &settings).await;
+                }
+                Err(err) => {
+                    if err.contains("403") {
+                        Self::sleep_while_running(30.0, &ctx.run).await;
+                        continue;
+                    }
+                }
+            }
+
+            // Canh mỗi 2 - 3.5 giây
+            Self::sleep_while_running(rand_between(2.0, 3.5), &ctx.run).await;
         }
     }
 

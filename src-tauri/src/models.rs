@@ -78,6 +78,9 @@ pub struct BotSettings {
     /// Tiếp tục tiến trình quét cũ từ lần trước (Resume)
     #[serde(default = "default_true")]
     pub resume_progress: bool,
+    /// ID kênh đánh boss cố định (nếu điền, bot sẽ tạo luồng canh riêng real-time; để trống = quét theo danh mục)
+    #[serde(default)]
+    pub button_channel_id: String,
 }
 
 fn default_true() -> bool {
@@ -114,6 +117,7 @@ impl Default for BotSettings {
             button_label_keyword: default_button_label(),
             button_emoji_keyword: default_button_emoji(),
             resume_progress: default_true(),
+            button_channel_id: String::new(),
         }
     }
 }
