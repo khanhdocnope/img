@@ -672,13 +672,16 @@ impl ReactorEngine {
 
             let ctx_c = ctx.clone();
             let sem_c = sem.clone();
+            let gid = ch.guild_id.clone().unwrap_or_else(|| guild_id.clone());
+            let ch_id = ch.id.clone();
+            let ch_name = ch.name.clone().unwrap_or_else(|| "channel".to_string());
 
             tasks.push(tokio::spawn(async move {
                 let _permit = sem_c.acquire().await.unwrap();
                 if !ctx_c.alive() {
                     return 0;
                 }
-                Self::process_channel(&ctx_c, &ch.id, ch.name.as_deref().unwrap_or("channel")).await
+                Self::process_channel(&ctx_c, &gid, &ch_id, &ch_name).await
             }));
         }
 
@@ -696,6 +699,7 @@ impl ReactorEngine {
     /// Trả về (số reaction mới, id tin cuối cùng đã react, có lỗi tạm thời không).
     async fn react_messages(
         ctx: &Arc<WorkerCtx>,
+        guild_id: &str,
         channel_id: u64,
         channel_name: &str,
         messages: Vec<DiscordMessage>,
@@ -734,39 +738,62 @@ impl ReactorEngine {
                             _ => continue,
                         };
 
-                        let click_key = format!("{}:{}", msg.id, custom_id);
-                        {
-                            let mut clicked = ctx.clicked_buttons.lock();
-                            if clicked.contains(&click_key) {
-                                continue;
-                            }
-                            clicked.insert(click_key);
-                        }
-
                         let label = btn.label.as_deref().unwrap_or("");
                         let emoji_name = btn.emoji.as_ref().and_then(|e| e.name.as_deref()).unwrap_or("");
 
-                        let label_match = !settings.button_label_keyword.is_empty()
-                            && label.to_lowercase().contains(&settings.button_label_keyword.to_lowercase());
-                        let emoji_match = !settings.button_emoji_keyword.is_empty()
-                            && emoji_name.contains(&settings.button_emoji_keyword);
+                        // Chuẩn hóa chuỗi (bỏ variation selector FE0F, khoảng trắng, chuyển chữ thường)
+                        let norm = |s: &str| -> String {
+                            s.replace('\u{fe0f}', "").trim().to_lowercase()
+                        };
+
+                        let norm_label = norm(label);
+                        let norm_emoji = norm(emoji_name);
+
+                        // Hỗ trợ nhiều từ khóa cách nhau bằng dấu phẩy
+                        let label_keywords: Vec<String> = settings
+                            .button_label_keyword
+                            .split(',')
+                            .map(|s| norm(s))
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        let emoji_keywords: Vec<String> = settings
+                            .button_emoji_keyword
+                            .split(',')
+                            .map(|s| norm(s))
+                            .filter(|s| !s.is_empty())
+                            .collect();
+
+                        let label_match = !label_keywords.is_empty()
+                            && label_keywords.iter().any(|kw| norm_label.contains(kw));
+                        let emoji_match = !emoji_keywords.is_empty()
+                            && emoji_keywords.iter().any(|kw| norm_emoji.contains(kw) || kw.contains(&norm_emoji));
 
                         if label_match || emoji_match {
+                            let click_key = format!("{}:{}", msg.id, custom_id);
+                            {
+                                let clicked = ctx.clicked_buttons.lock();
+                                if clicked.contains(&click_key) {
+                                    continue;
+                                }
+                            }
+
                             let app_id = msg.application_id.as_deref().unwrap_or(&msg.author.id);
-                            let guild_id = msg.guild_id.as_deref();
 
                             ctx.log(format!(
-                                "[⚔️ Đánh Boss] Phát hiện nút \"{}\" tại #{}, đang bấm...",
-                                if !label.is_empty() { label } else { emoji_name },
+                                "[⚔️ Đánh Boss] Phát hiện nút \"{}\" (emoji: {}) tại #{}, đang bấm...",
+                                if !label.is_empty() { label } else { "(không chữ)" },
+                                if !emoji_name.is_empty() { emoji_name } else { "none" },
                                 channel_name
                             ));
 
                             match ctx
                                 .client
-                                .click_button(guild_id, channel_id, &msg.id, app_id, custom_id)
+                                .click_button(Some(guild_id), channel_id, &msg.id, app_id, custom_id)
                                 .await
                             {
                                 Ok(true) => {
+                                    // Ghi nhận đã bấm thành công để không bấm lại
+                                    ctx.clicked_buttons.lock().insert(click_key);
                                     ctx.log(format!(
                                         "[⚔️ Đánh Boss] ✅ Đã đánh thành công tại #{} (tin {})",
                                         channel_name, msg.id
@@ -864,7 +891,12 @@ impl ReactorEngine {
         (new_reacted, last_message_id, had_error)
     }
 
-    async fn process_channel(ctx: &Arc<WorkerCtx>, channel_id_str: &str, channel_name: &str) -> u64 {
+    async fn process_channel(
+        ctx: &Arc<WorkerCtx>,
+        guild_id: &str,
+        channel_id_str: &str,
+        channel_name: &str,
+    ) -> u64 {
         let channel_id: u64 = match channel_id_str.parse() {
             Ok(id) => id,
             Err(_) => return 0,
@@ -951,7 +983,7 @@ impl ReactorEngine {
                 let oldest_id = page.last().and_then(|m| m.id.parse::<u64>().ok());
 
                 let (reacted, _, had_error) =
-                    Self::react_messages(ctx, channel_id, channel_name, page, &settings, &config).await;
+                    Self::react_messages(ctx, guild_id, channel_id, channel_name, page, &settings, &config).await;
 
                 total_channel_reacted += reacted;
 
@@ -1012,7 +1044,7 @@ impl ReactorEngine {
             if !page.is_empty() {
                 newest_msg_id = page.first().map(|m| m.id.clone());
                 let (reacted, _, _) =
-                    Self::react_messages(ctx, channel_id, channel_name, page, &settings, &config).await;
+                    Self::react_messages(ctx, guild_id, channel_id, channel_name, page, &settings, &config).await;
                 total_channel_reacted += reacted;
 
                 let newest_str = newest_msg_id.clone();

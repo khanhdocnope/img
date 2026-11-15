@@ -431,27 +431,32 @@ impl DiscordClient {
         application_id: &str,
         custom_id: &str,
     ) -> Result<bool, String> {
+        let gid = match guild_id {
+            Some(g) if !g.is_empty() => g,
+            _ => return Err("Thiếu guild_id khi bấm nút component trong server".to_string()),
+        };
+
         let url = format!("{}/interactions", BASE_URL);
         let session_id = uuid::Uuid::new_v4().simple().to_string();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| ((d.as_millis() as u64).saturating_sub(1420070400000) << 22).to_string())
+            .unwrap_or_default();
 
-        let mut payload = serde_json::json!({
+        let payload = serde_json::json!({
             "type": 3, // MESSAGE_COMPONENT
-            "application_id": application_id,
+            "nonce": nonce,
+            "guild_id": gid,
             "channel_id": channel_id.to_string(),
             "message_flags": 0,
             "message_id": message_id,
+            "application_id": application_id,
             "session_id": session_id,
             "data": {
                 "component_type": 2, // BUTTON
                 "custom_id": custom_id
             }
         });
-
-        if let Some(gid) = guild_id {
-            if let Some(obj) = payload.as_object_mut() {
-                obj.insert("guild_id".to_string(), serde_json::Value::String(gid.to_string()));
-            }
-        }
 
         let resp = self
             .client
