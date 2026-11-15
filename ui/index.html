@@ -2,8 +2,9 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0f1012">
+  <meta name="color-scheme" content="dark">
   <title>Discord Reactor</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -20,52 +21,56 @@
     </header>
 
     <main class="content">
-      <!-- DASHBOARD -->
+      <!-- TỔNG QUAN -->
       <section id="tab-dashboard" class="screen active">
-        <div class="hero">
-          <div class="hero-account">
-            <span class="eyebrow">Tài khoản</span>
-            <strong id="dash-account-name">Chưa chọn</strong>
-          </div>
-          <div id="dash-workers" class="workers hidden"></div>
-          <div class="stats">
-            <div class="stat">
-              <span class="stat-val" id="dash-reactions">0</span>
-              <span class="stat-desc">Phiên này</span>
+        <div class="dash-grid">
+          <div class="dash-side">
+            <div class="hero">
+              <div class="hero-account">
+                <span class="eyebrow">Tài khoản</span>
+                <strong id="dash-account-name">Chưa chọn</strong>
+              </div>
+              <div id="dash-workers" class="workers hidden"></div>
+              <div class="stats">
+                <div class="stat">
+                  <span class="stat-val" id="dash-reactions">0</span>
+                  <span class="stat-desc">Phiên này</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-val" id="dash-total">0</span>
+                  <span class="stat-desc">Tổng cộng</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-val" id="dash-channels">0</span>
+                  <span class="stat-desc">Kênh quét</span>
+                </div>
+              </div>
             </div>
-            <div class="stat">
-              <span class="stat-val" id="dash-total">0</span>
-              <span class="stat-desc">Tổng cộng</span>
+
+            <button id="btn-toggle-bot" class="btn btn-large btn-block btn-start">Bắt đầu chạy</button>
+
+            <div id="dash-progress-section" class="progress-section hidden">
+              <div class="section-head">
+                <h2>Tiến trình kênh</h2>
+                <span id="dash-progress-count" class="muted small">0 kênh</span>
+              </div>
+              <div id="dash-progress-list" class="progress-list"></div>
             </div>
-            <div class="stat">
-              <span class="stat-val" id="dash-channels">0</span>
-              <span class="stat-desc">Kênh quét</span>
+          </div>
+
+          <div class="log-section">
+            <div class="section-head">
+              <h2>Nhật ký</h2>
+              <button id="btn-clear-log" class="link-btn">Xóa</button>
+            </div>
+            <div id="log-terminal" class="terminal">
+              <div class="log-line muted"><span class="ts">--:--:--</span><span>Sẵn sàng.</span></div>
             </div>
           </div>
-        </div>
-
-        <button id="btn-toggle-bot" class="btn btn-large btn-block btn-start">Bắt đầu chạy</button>
-
-        <div class="log-section">
-          <div class="section-head">
-            <h2>Nhật ký</h2>
-            <button id="btn-clear-log" class="link-btn">Xóa</button>
-          </div>
-          <div id="log-terminal" class="terminal">
-            <div class="log-line muted"><span class="ts">--:--:--</span><span>Sẵn sàng.</span></div>
-          </div>
-        </div>
-
-        <div id="dash-progress-section" class="progress-section hidden">
-          <div class="section-head">
-            <h2>Tiến trình từng kênh</h2>
-            <span id="dash-progress-count" class="muted" style="font-size: 12px;">0 kênh</span>
-          </div>
-          <div id="dash-progress-list" class="progress-list"></div>
         </div>
       </section>
 
-      <!-- ACCOUNTS -->
+      <!-- TÀI KHOẢN -->
       <section id="tab-accounts" class="screen">
         <div class="section-head">
           <h2>Tài khoản</h2>
@@ -85,160 +90,7 @@
         <div id="accounts-list" class="list"></div>
       </section>
 
-      <!-- SETTINGS -->
-      <section id="tab-settings" class="screen">
-        <div class="section-head"><h2>Cài đặt</h2></div>
-        <div class="group">
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-delay">Độ trễ ngẫu nhiên (giây)</label>
-              <small>Mỗi reaction chờ ngẫu nhiên từ … đến …. (khuyên dùng 0.2 – 0.5s để chạy nhanh).</small>
-            </div>
-            <div class="range-inputs">
-              <input type="number" id="cfg-delay" step="0.05" min="0.05" value="0.3" class="input input-num" inputmode="decimal" aria-label="Tối thiểu">
-              <span>–</span>
-              <input type="number" id="cfg-delay-max" step="0.05" min="0.05" value="0.6" class="input input-num" inputmode="decimal" aria-label="Tối đa">
-            </div>
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-conc">Kênh song song</label>
-              <small>Số kênh quét cùng lúc.</small>
-            </div>
-            <input type="number" id="cfg-conc" min="1" max="10" value="4" class="input input-num" inputmode="numeric">
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-skip-bots">Bỏ qua tin của Bot</label>
-              <small>Không react tin nhắn từ bot khác.</small>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="cfg-skip-bots" checked>
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-full-scan">Quét toàn bộ tin nhắn (Full scan)</label>
-              <small>Quét toàn bộ lịch sử kênh (không bị giới hạn 100 tin).</small>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="cfg-full-scan" checked>
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-resume-prog">Tiếp tục quét từ lần trước</label>
-              <small>Lưu vị trí tin nhắn cũ đã quét, tiếp tục quét tiếp chứ không quét lại từ đầu khi mở lại bot.</small>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="cfg-resume-prog" checked>
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-max-msgs">Số tin tối đa mỗi kênh</label>
-              <small>Để trống = Quét không giới hạn toàn bộ kênh.</small>
-            </div>
-            <input type="number" id="cfg-max-msgs" min="1" step="50" placeholder="Không giới hạn" class="input input-num" inputmode="numeric">
-          </div>
-        </div>
-
-        <div class="section-head sub-head"><h2>⚔️ Tự động Đánh Boss (Click nút)</h2></div>
-        <div class="group">
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-auto-button">Bật tự click nút Boss</label>
-              <small>Tự động bấm các nút tương tác (Buttons) trên tin nhắn bot game.</small>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="cfg-auto-button">
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-btn-label">Từ khóa tên nút</label>
-              <small>Tìm nút có chữ này (ví dụ: Đánh Boss, Tấn công...).</small>
-            </div>
-            <input type="text" id="cfg-btn-label" class="input input-wide" value="Đánh Boss" placeholder="Đánh Boss">
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-btn-emoji">Emoji trên nút</label>
-              <small>Tìm nút có emoji này (ví dụ: ⚔️).</small>
-            </div>
-            <input type="text" id="cfg-btn-emoji" class="input input-num" value="⚔️" placeholder="⚔️" style="min-width: 80px; text-align: center;">
-          </div>
-        </div>
-
-        <div class="section-head sub-head"><h2>Gửi emoji tự động</h2></div>
-        <div class="group">
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-es-enabled">Bật gửi emoji</label>
-              <small>Gửi ngẫu nhiên emoji của server, không lặp trong 10 tin gần nhất.</small>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="cfg-es-enabled">
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-es-channel">ID kênh</label>
-              <small>Kênh nhận emoji (cùng server).</small>
-            </div>
-            <input type="text" id="cfg-es-channel" class="input input-wide" placeholder="123456789012345678" inputmode="numeric" autocomplete="off">
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-es-interval">Chu kỳ (giây)</label>
-              <small>Khớp với slowmode của kênh (kênh 60s chọn 60s).</small>
-              <div class="chip-group" id="es-chips">
-                <button type="button" class="chip" data-val="15">15s</button>
-                <button type="button" class="chip" data-val="30">30s</button>
-                <button type="button" class="chip active" data-val="60">60s</button>
-                <button type="button" class="chip" data-val="120">120s</button>
-              </div>
-            </div>
-            <input type="number" id="cfg-es-interval" min="1" step="1" value="60" class="input input-num" inputmode="numeric">
-          </div>
-          <div class="row">
-            <div class="row-text">
-              <label for="cfg-es-animated">Gồm emoji động</label>
-              <small>Chỉ bật nếu tài khoản có Nitro.</small>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="cfg-es-animated">
-              <span class="slider"></span>
-            </label>
-          </div>
-        </div>
-
-        <button id="btn-save-settings" class="btn btn-primary btn-block btn-large">Lưu cài đặt</button>
-        <button id="btn-export-render-config" class="btn btn-secondary btn-block" style="margin-top: 10px;">📋 Sao chép cấu hình (cho Render ENV)</button>
-
-        <div class="section-head sub-head"><h2>💾 Sao lưu & Đồng bộ (LocalStorage)</h2></div>
-        <p class="desc">Trên Render Free, ổ đĩa sẽ bị đặt lại khi deploy bản mới. Trình duyệt này tự động lưu và khôi phục tài khoản / cài đặt mỗi khi mở web.</p>
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          <div style="display: flex; gap: 8px;">
-            <button id="btn-backup-local" class="btn btn-secondary btn-block" style="flex: 1;">💾 Lưu vào LocalStorage</button>
-            <button id="btn-restore-local" class="btn btn-secondary btn-block" style="flex: 1;">📥 Khôi phục từ LocalStorage</button>
-          </div>
-          <div style="display: flex; gap: 8px;">
-            <button id="btn-export-json" class="btn btn-ghost btn-block" style="flex: 1;">📂 Xuất file .json</button>
-            <button id="btn-import-json-trigger" class="btn btn-ghost btn-block" style="flex: 1;">📥 Nhập file .json</button>
-            <input type="file" id="file-import-json" accept=".json,application/json" style="display: none;">
-          </div>
-        </div>
-
-        <button id="btn-reset-prog" class="btn btn-ghost-danger btn-block" style="margin-top: 10px;">Đặt lại tiến trình quét</button>
-      </section>
-
-      <!-- CATEGORIES -->
+      <!-- DANH MỤC -->
       <section id="tab-categories" class="screen">
         <div class="section-head">
           <h2>Danh mục</h2>
@@ -246,6 +98,172 @@
         </div>
         <p class="desc">Category cần quét và các kênh muốn bỏ qua.</p>
         <div id="categories-list" class="list"></div>
+      </section>
+
+      <!-- CÀI ĐẶT -->
+      <section id="tab-settings" class="screen">
+        <div class="section-head"><h2>Cài đặt</h2></div>
+
+        <div class="settings-grid">
+          <div class="block">
+            <h3 class="block-title">Quét reaction</h3>
+            <div class="group">
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-delay">Độ trễ ngẫu nhiên (giây)</label>
+                  <small>Mỗi reaction chờ từ … đến …</small>
+                </div>
+                <div class="range-inputs">
+                  <input type="number" id="cfg-delay" step="0.05" min="0.05" value="0.3" class="input input-num" inputmode="decimal" aria-label="Tối thiểu">
+                  <span>–</span>
+                  <input type="number" id="cfg-delay-max" step="0.05" min="0.05" value="0.6" class="input input-num" inputmode="decimal" aria-label="Tối đa">
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-conc">Kênh song song</label>
+                  <small>Số kênh quét cùng lúc</small>
+                </div>
+                <input type="number" id="cfg-conc" min="1" max="10" value="4" class="input input-num" inputmode="numeric">
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-max-msgs">Số tin tối đa mỗi kênh</label>
+                  <small>Để trống = không giới hạn</small>
+                </div>
+                <input type="number" id="cfg-max-msgs" min="1" step="50" placeholder="∞" class="input input-num" inputmode="numeric">
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-skip-bots">Bỏ qua tin của bot</label>
+                  <small>Không react tin nhắn từ bot khác</small>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfg-skip-bots" checked>
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-full-scan">Quét toàn bộ tin nhắn</label>
+                  <small>Không bị giới hạn 100 tin gần nhất</small>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfg-full-scan" checked>
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-resume-prog">Tiếp tục từ lần trước</label>
+                  <small>Nhớ vị trí đã quét khi mở lại bot</small>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfg-resume-prog" checked>
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="block">
+            <h3 class="block-title">Tự động đánh Boss</h3>
+            <div class="group">
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-auto-button">Tự click nút Boss</label>
+                  <small>Bấm nút tương tác trên tin nhắn bot game</small>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfg-auto-button">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="row stack">
+                <div class="row-text">
+                  <label for="cfg-btn-label">Từ khóa tên nút</label>
+                  <small>Ví dụ: Đánh Boss, Tấn công…</small>
+                </div>
+                <input type="text" id="cfg-btn-label" class="input" value="Đánh Boss" placeholder="Đánh Boss" autocomplete="off">
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-btn-emoji">Emoji trên nút</label>
+                  <small>Ví dụ: ⚔️</small>
+                </div>
+                <input type="text" id="cfg-btn-emoji" class="input input-num input-center" value="⚔️" placeholder="⚔️" autocomplete="off">
+              </div>
+            </div>
+          </div>
+
+          <div class="block">
+            <h3 class="block-title">Gửi emoji tự động</h3>
+            <div class="group">
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-es-enabled">Bật gửi emoji</label>
+                  <small>Ngẫu nhiên, không lặp trong 10 tin gần nhất</small>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfg-es-enabled">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="row stack">
+                <div class="row-text">
+                  <label for="cfg-es-channel">ID kênh</label>
+                  <small>Kênh nhận emoji (cùng server)</small>
+                </div>
+                <input type="text" id="cfg-es-channel" class="input input-mono" placeholder="123456789012345678" inputmode="numeric" autocomplete="off">
+              </div>
+              <div class="row stack">
+                <div class="row-text">
+                  <label for="cfg-es-interval">Chu kỳ (giây)</label>
+                  <small>Khớp với slowmode của kênh</small>
+                </div>
+                <div class="inline-controls">
+                  <div class="chip-group" id="es-chips">
+                    <button type="button" class="chip" data-val="15">15s</button>
+                    <button type="button" class="chip" data-val="30">30s</button>
+                    <button type="button" class="chip active" data-val="60">60s</button>
+                    <button type="button" class="chip" data-val="120">120s</button>
+                  </div>
+                  <input type="number" id="cfg-es-interval" min="1" step="1" value="60" class="input input-num" inputmode="numeric">
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label for="cfg-es-animated">Gồm emoji động</label>
+                  <small>Chỉ bật nếu tài khoản có Nitro</small>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="cfg-es-animated">
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="block">
+            <h3 class="block-title">Dữ liệu</h3>
+            <div class="group group-pad">
+              <p class="desc">Trình duyệt tự lưu và khôi phục tài khoản, cài đặt khi mở lại (hữu ích khi server đặt lại ổ đĩa).</p>
+              <div class="btn-grid">
+                <button id="btn-backup-local" class="btn btn-secondary">Sao lưu</button>
+                <button id="btn-restore-local" class="btn btn-secondary">Khôi phục</button>
+                <button id="btn-export-json" class="btn btn-secondary">Xuất .json</button>
+                <button id="btn-import-json-trigger" class="btn btn-secondary">Nhập .json</button>
+                <button id="btn-export-render-config" class="btn btn-secondary web-only span-2">Sao chép cấu hình (Render ENV)</button>
+              </div>
+              <input type="file" id="file-import-json" accept=".json,application/json" hidden>
+              <button id="btn-reset-prog" class="btn btn-ghost-danger btn-block">Đặt lại tiến trình quét</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="savebar">
+          <button id="btn-save-settings" class="btn btn-primary btn-block btn-large">Lưu cài đặt</button>
+        </div>
       </section>
     </main>
 
@@ -296,7 +314,7 @@
 
   <!-- Modal hướng dẫn token -->
   <div id="modal-token-guide" class="modal-overlay hidden">
-    <div class="sheet sheet-tall">
+    <div class="sheet">
       <div class="sheet-grip"></div>
       <h3>Lấy token trên điện thoại</h3>
       <ol class="steps">

@@ -15,6 +15,9 @@ const invoke = hasTauri
       return await res.json().catch(() => null);
     };
 
+// Đánh dấu nền tảng cho CSS (app = Tauri Windows/Android, web = trình duyệt/Render)
+document.body.dataset.platform = hasTauri ? "app" : "web";
+
 // State toàn cục phía UI
 let currentConfig = null;
 let currentStatus = { is_running: false, session_reactions: 0, total_reactions: 0, total_channels_scanned: 0, active_account_name: "" };
@@ -241,7 +244,7 @@ function renderAccounts() {
     card.innerHTML = `
       <div class="avatar">${initial}</div>
       <div class="row-info">
-        <div class="row-title"><span class="t">${esc(acc.name)}</span>${showPrimaryChip ? '<span class="chip">Chính</span>' : ""}</div>
+        <div class="row-title"><span class="t">${esc(acc.name)}</span>${showPrimaryChip ? '<span class="tag">Chính</span>' : ""}</div>
         <div class="row-sub">${esc(masked)}</div>
         <span class="status st-${esc(st.state)}" title="${esc(st.msg || "")}">${esc(label + extra)}</span>
       </div>
@@ -359,6 +362,7 @@ function renderWorkers(workers) {
         <span class="w-name">${esc(w.name)}</span>
         <span class="w-count">${Number(w.reactions || 0).toLocaleString("vi-VN")}</span>
         <span class="w-state">${esc(WORKER_TEXT[w.state] || w.state)}${w.note && w.state !== "running" ? " · " + esc(w.note) : ""}</span>
+        <span class="w-emoji${/^(Lỗi|Không|Chưa)/.test(w.emoji_note || "") ? " bad" : ""}">Emoji: ${Number(w.emoji_sent || 0).toLocaleString("vi-VN")} tin${w.emoji_note ? " · " + esc(w.emoji_note) : ""}</span>
       </div>`
     )
     .join("");

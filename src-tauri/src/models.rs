@@ -237,6 +237,12 @@ pub struct WorkerStatus {
     pub state: String,
     pub note: String,
     pub reactions: u64,
+    /// Số tin emoji tài khoản này đã gửi trong phiên
+    #[serde(default)]
+    pub emoji_sent: u64,
+    /// Trạng thái luồng gửi emoji của tài khoản này (đang gửi / lỗi gì)
+    #[serde(default)]
+    pub emoji_note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
