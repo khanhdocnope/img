@@ -18,6 +18,7 @@ scripts/patch_android.py  Chạy sau `cargo tauri android init`: Foreground Serv
 .github/workflows/build.yml  CI: build APK + EXE rồi đăng lên GitHub Releases
 ```
 
+
 Các thư mục/file `main.py`, `core/`, `data/`, `service.py`, `buildozer.spec`, `requirements.txt`
 là **bản Python/Kivy cũ**, không còn dùng. Đừng sửa; chỉ tham khảo logic gốc khi cần.
 
