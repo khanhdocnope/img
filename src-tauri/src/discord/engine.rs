@@ -153,6 +153,8 @@ struct WorkerHandle {
     reactions: Arc<AtomicU64>,
     /// (trạng thái, ghi chú)
     state: Arc<RwLock<(String, String)>>,
+    emoji_sent: Arc<AtomicU64>,
+    emoji_note: Arc<RwLock<String>>,
 }
 
 pub struct ReactorEngine {
@@ -207,6 +209,8 @@ impl ReactorEngine {
                     state,
                     note,
                     reactions: w.reactions.load(Ordering::SeqCst),
+                    emoji_sent: w.emoji_sent.load(Ordering::SeqCst),
+                    emoji_note: w.emoji_note.read().clone(),
                 }
             })
             .collect();
@@ -263,6 +267,8 @@ impl ReactorEngine {
             let run = Arc::new(AtomicBool::new(true));
             let reactions = Arc::new(AtomicU64::new(0));
             let state = Arc::new(RwLock::new(("starting".to_string(), String::new())));
+            let emoji_sent = Arc::new(AtomicU64::new(0));
+            let emoji_note = Arc::new(RwLock::new("Chưa gửi".to_string()));
 
             handles.push(WorkerHandle {
                 account_id: account.id.clone(),
@@ -270,6 +276,8 @@ impl ReactorEngine {
                 run: run.clone(),
                 reactions: reactions.clone(),
                 state: state.clone(),
+                emoji_sent: emoji_sent.clone(),
+                emoji_note: emoji_note.clone(),
             });
 
             let ctx = Arc::new(WorkerCtx {
@@ -296,9 +304,11 @@ impl ReactorEngine {
             let start_delay = if idx == 0 { 0.0 } else { rand_between(20.0, 45.0) };
             let is_running = self.is_running.clone();
             let active = self.active_workers.clone();
+            let es_sent = emoji_sent.clone();
+            let es_note = emoji_note.clone();
 
             tokio::spawn(async move {
-                Self::run_worker(ctx, idx, start_delay, state).await;
+                Self::run_worker(ctx, idx, start_delay, state, es_sent, es_note).await;
                 // Worker cuối cùng thoát thì đánh dấu bot đã dừng
                 if active.fetch_sub(1, Ordering::SeqCst) == 1 {
                     is_running.store(false, Ordering::SeqCst);
@@ -313,6 +323,8 @@ impl ReactorEngine {
         idx: usize,
         start_delay: f64,
         state: Arc<RwLock<(String, String)>>,
+        emoji_sent: Arc<AtomicU64>,
+        emoji_note: Arc<RwLock<String>>,
     ) {
         let set = |s: &str, note: &str| {
             *state.write() = (s.to_string(), note.to_string());
@@ -354,6 +366,8 @@ impl ReactorEngine {
             ctx.run.clone(),
             ctx.on_log.clone(),
             sender_delay,
+            emoji_sent,
+            emoji_note,
         ));
 
         while ctx.alive() {
@@ -464,6 +478,8 @@ impl ReactorEngine {
         is_running: Arc<AtomicBool>,
         on_log: LogCallback,
         initial_delay: f64,
+        emoji_sent: Arc<AtomicU64>,
+        emoji_note: Arc<RwLock<String>>,
     ) {
         let tag = format!("[Emoji: {}]", account_name);
         let log = {
@@ -475,6 +491,7 @@ impl ReactorEngine {
         };
 
         if initial_delay > 0.0 {
+            *emoji_note.write() = format!("Khởi động sau {:.0}s", initial_delay);
             Self::sleep_while_running(initial_delay, &is_running).await;
         }
 
@@ -498,6 +515,7 @@ impl ReactorEngine {
             let channel_id = match (cfg.enabled, cfg.channel_id.trim().parse::<u64>().ok()) {
                 (true, Some(id)) => id,
                 _ => {
+                    *emoji_note.write() = "Chưa bật / chưa cấu hình".to_string();
                     Self::sleep_while_running(3.0, &is_running).await;
                     continue;
                 }
@@ -594,19 +612,24 @@ impl ReactorEngine {
                     recent.push_front(emoji.clone());
                     recent.truncate(RECENT_LIMIT);
                     sent_total += 1;
+                    emoji_sent.fetch_add(1, Ordering::SeqCst);
+                    *emoji_note.write() = format!("Đã gửi {}", emoji);
                     log(format!("Đã gửi {} (tổng: {})", emoji, sent_total));
                     // Cộng thêm 0–1,5s ngẫu nhiên để không đúng mép slowmode
                     Self::sleep_while_running(cfg.interval_secs.max(1) as f64 + rand_between(0.0, 1.5), &is_running).await;
                 }
                 Ok(SendOutcome::RateLimited(secs)) => {
+                    *emoji_note.write() = format!("Slowmode {:.0}s", secs + 0.5);
                     log(format!("Kênh đang giới hạn tốc độ, chờ {:.0}s...", secs + 0.5));
                     Self::sleep_while_running(secs + 0.5, &is_running).await;
                 }
                 Ok(SendOutcome::Forbidden) => {
+                    *emoji_note.write() = "Không có quyền gửi".to_string();
                     log("[!] Không có quyền gửi tin nhắn vào kênh này. Thử lại sau 60s.".to_string());
                     Self::sleep_while_running(60.0, &is_running).await;
                 }
                 Err(e) => {
+                    *emoji_note.write() = format!("Lỗi: {}", e);
                     log(format!("[!] {}", e));
                     let wait = if e.starts_with("NET:") { 10.0 } else { 30.0 };
                     Self::sleep_while_running(wait, &is_running).await;
