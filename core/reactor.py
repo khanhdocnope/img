@@ -30,7 +30,7 @@ class DiscordReactorEngine:
         self.bot: Optional[commands.Bot] = None
         self.total_reacted_session = 0
         self.blocked_channels = set()
-        self.clicked_buttons = set()
+        self.clicked_buttons = {}  # click_key -> float(timestamp)
         self._stop_event = asyncio.Event()
 
     def log(self, msg: str):
@@ -130,7 +130,8 @@ class DiscordReactorEngine:
                         for child in children:
                             custom_id = getattr(child, "custom_id", None) or getattr(child, "id", "")
                             click_key = f"{message.id}:{custom_id}"
-                            if click_key in self.clicked_buttons:
+                            now_t = time.time()
+                            if now_t - self.clicked_buttons.get(click_key, 0) < 8.0:
                                 continue
 
                             label = getattr(child, "label", "") or ""
@@ -141,7 +142,7 @@ class DiscordReactorEngine:
                             emoji_match = bool(btn_emoji_kw and (btn_emoji_kw in emoji_name))
 
                             if label_match or emoji_match:
-                                self.clicked_buttons.add(click_key)
+                                self.clicked_buttons[click_key] = now_t
                                 click_fn = getattr(child, "click", None)
                                 if callable(click_fn):
                                     try:

@@ -2,7 +2,7 @@ use crate::config::ConfigManager;
 use crate::discord::client::{DiscordClient, InvalidMeter, SendOutcome};
 use crate::models::{
     Account, BotSettings, CategoryConfig, ChannelProgress, Config, DiscordMessage, EngineStatus,
-    WorkerStatus,
+    MessageComponent, WorkerStatus,
 };
 use chrono::Local;
 use parking_lot::{Mutex, RwLock};
@@ -12,6 +12,47 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
+
+/// Chuyển đổi ký tự tiếng Việt có dấu thành không dấu để so khớp từ khóa siêu chính xác
+fn remove_vietnamese_accents(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let repl = match c {
+            'á' | 'à' | 'ả' | 'ã' | 'ạ' | 'ă' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' | 'â' | 'ấ' | 'ầ' | 'ẩ' | 'ẫ' | 'ậ' => 'a',
+            'é' | 'è' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ế' | 'ề' | 'ể' | 'ễ' | 'ệ' => 'e',
+            'í' | 'ì' | 'ỉ' | 'ĩ' | 'ị' => 'i',
+            'ó' | 'ò' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ớ' | 'ờ' | 'ở' | 'ỡ' | 'ợ' => 'o',
+            'ú' | 'ù' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự' => 'u',
+            'ý' | 'ỳ' | 'ỷ' | 'ỹ' | 'ỵ' => 'y',
+            'đ' => 'd',
+            'Á' | 'À' | 'Ả' | 'Ã' | 'Ạ' | 'Ă' | 'Ắ' | 'Ằ' | 'Ẳ' | 'Ẵ' | 'Ặ' | 'Â' | 'Ấ' | 'Ầ' | 'Ẩ' | 'Ẫ' | 'Ậ' => 'a',
+            'É' | 'È' | 'Ẻ' | 'Ẽ' | 'Ẹ' | 'Ê' | 'Ế' | 'Ề' | 'Ể' | 'Ễ' | 'Ệ' => 'e',
+            'Í' | 'Ì' | 'Ỉ' | 'Ĩ' | 'Ị' => 'i',
+            'Ó' | 'Ò' | 'Ỏ' | 'Õ' | 'Ọ' | 'Ô' | 'Ố' | 'Ồ' | 'Ổ' | 'Ỗ' | 'Ộ' | 'Ơ' | 'Ớ' | 'Ờ' | 'Ở' | 'Ỡ' | 'Ợ' => 'o',
+            'Ú' | 'Ù' | 'Ủ' | 'Ũ' | 'Ụ' | 'Ư' | 'Ứ' | 'Ừ' | 'Ử' | 'Ữ' | 'Ự' => 'u',
+            'Ý' | 'Ỳ' | 'Ỷ' | 'Ỹ' | 'Ỵ' => 'y',
+            'Đ' => 'd',
+            other => other,
+        };
+        out.push(repl);
+    }
+    out
+}
+
+/// Chuẩn hóa chuỗi: chuyển chữ thường, bỏ biến thể Unicode FE0F, khoảng trắng thừa, bỏ dấu tiếng Việt
+fn norm_text(s: &str) -> String {
+    let cleaned = s.replace('\u{fe0f}', "").replace('\u{00a0}', " ");
+    let unaccented = remove_vietnamese_accents(&cleaned);
+    unaccented.trim().to_lowercase()
+}
+
+#[derive(Debug, Clone)]
+struct ExtractedButton {
+    custom_id: String,
+    label: String,
+    emoji_name: String,
+    disabled: bool,
+}
 
 /// Số phản hồi lỗi (401/403/429) trong 10 phút mà tại đó mọi tài khoản tạm nghỉ để tránh bị chặn IP
 const INVALID_LIMIT: usize = 120;
@@ -64,14 +105,12 @@ struct WorkerCtx {
     meter: Arc<InvalidMeter>,
     /// Hệ số tốc độ ngẫu nhiên riêng của tài khoản (0.9–1.3) để hai nhịp không giống nhau
     speed: f64,
-    /// Độ trễ tối thiểu giữa hai reaction (cao hơn khi chạy nhiều tài khoản)
-    min_delay: f64,
     strikes: AtomicU32,
     cooldown_until_ms: AtomicU64,
     /// Các kênh không có quyền react: bỏ qua một thời gian thay vì gọi lại mỗi lượt
     blocked: Mutex<HashMap<u64, Instant>>,
-    /// Cache các nút đã click (dạng "message_id:custom_id") để không bấm lặp lại
-    clicked_buttons: Mutex<HashSet<String>>,
+    /// Cache các nút đã click (dạng "message_id:custom_id" -> Instant) với cooldown 8s để có thể đánh lại khi sang hiệp/hồi sinh
+    clicked_buttons: Mutex<HashMap<String, Instant>>,
 }
 
 impl WorkerCtx {
@@ -294,11 +333,10 @@ impl ReactorEngine {
                 on_log: on_log.clone(),
                 meter: self.meter.clone(),
                 speed: 1.0,
-                min_delay: 0.05,
                 strikes: AtomicU32::new(0),
                 cooldown_until_ms: AtomicU64::new(0),
                 blocked: Mutex::new(HashMap::new()),
-                clicked_buttons: Mutex::new(HashSet::new()),
+                clicked_buttons: Mutex::new(HashMap::new()),
             });
 
             let start_delay = if idx == 0 { 0.0 } else { rand_between(20.0, 45.0) };
@@ -695,6 +733,146 @@ impl ReactorEngine {
         Ok(total_cat_reactions)
     }
 
+    /// Trích xuất toàn bộ các nút bấm từ các components (hỗ trợ ActionRow hoặc lồng nhau)
+    fn extract_all_buttons(components: &[MessageComponent]) -> Vec<ExtractedButton> {
+        let mut results = Vec::new();
+        for comp in components {
+            Self::collect_buttons_recursive(comp, &mut results);
+        }
+        results
+    }
+
+    fn collect_buttons_recursive(comp: &MessageComponent, out: &mut Vec<ExtractedButton>) {
+        if comp.component_type == 2 || comp.custom_id.is_some() {
+            if let Some(ref cid) = comp.custom_id {
+                if !cid.is_empty() {
+                    out.push(ExtractedButton {
+                        custom_id: cid.clone(),
+                        label: comp.label.clone().unwrap_or_default(),
+                        emoji_name: comp.emoji.as_ref().and_then(|e| e.name.clone()).unwrap_or_default(),
+                        disabled: comp.disabled.unwrap_or(false),
+                    });
+                }
+            }
+        }
+        for sub in &comp.components {
+            Self::collect_buttons_recursive(sub, out);
+        }
+    }
+
+    /// Tự động kiểm tra và bấm nút Boss trên một danh sách tin nhắn
+    async fn check_and_click_buttons(
+        ctx: &Arc<WorkerCtx>,
+        guild_id: &str,
+        channel_id: u64,
+        channel_name: &str,
+        messages: &[DiscordMessage],
+        settings: &BotSettings,
+    ) {
+        if !settings.auto_button_enabled {
+            return;
+        }
+
+        // Tự động dọn dẹp các nút đã ghi nhận quá 10 phút
+        {
+            let mut clicked = ctx.clicked_buttons.lock();
+            let now = Instant::now();
+            clicked.retain(|_, time| now.duration_since(*time) < Duration::from_secs(600));
+        }
+
+        for msg in messages {
+            if !ctx.alive() {
+                break;
+            }
+
+            // Chỉ quan tâm tin nhắn có component hoặc tin nhắn từ Bot
+            if msg.components.is_empty() && !msg.author.bot {
+                continue;
+            }
+
+            let buttons = Self::extract_all_buttons(&msg.components);
+            if buttons.is_empty() {
+                continue;
+            }
+
+            for btn in buttons {
+                if btn.disabled {
+                    continue;
+                }
+                if btn.custom_id.is_empty() {
+                    continue;
+                }
+
+                let norm_label = norm_text(&btn.label);
+                let norm_emoji = norm_text(&btn.emoji_name);
+
+                let label_keywords: Vec<String> = settings
+                    .button_label_keyword
+                    .split(',')
+                    .map(|s| norm_text(s))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let emoji_keywords: Vec<String> = settings
+                    .button_emoji_keyword
+                    .split(',')
+                    .map(|s| norm_text(s))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                let label_match = (!label_keywords.is_empty() && label_keywords.iter().any(|kw| norm_label.contains(kw) || kw.contains(&norm_label)))
+                    || norm_label.contains("danh boss")
+                    || norm_label.contains("tan cong")
+                    || norm_label.contains("attack");
+
+                let emoji_match = (!emoji_keywords.is_empty() && emoji_keywords.iter().any(|kw| norm_emoji.contains(kw) || kw.contains(&norm_emoji)))
+                    || norm_emoji.contains("⚔")
+                    || norm_label.contains("⚔");
+
+                if label_match || emoji_match {
+                    let click_key = format!("{}:{}", msg.id, btn.custom_id);
+                    {
+                        let clicked = ctx.clicked_buttons.lock();
+                        if let Some(last_time) = clicked.get(&click_key) {
+                            if last_time.elapsed() < Duration::from_secs(8) {
+                                // Cooldown 8 giây cho cùng 1 nút để tránh spam đúp
+                                continue;
+                            }
+                        }
+                    }
+
+                    let app_id = msg.application_id.as_deref().unwrap_or(&msg.author.id);
+
+                    ctx.log(format!(
+                        "[⚔️ Đánh Boss] Phát hiện nút \"{}\" (emoji: {}) tại #{}, đang bấm...",
+                        if !btn.label.is_empty() { &btn.label } else { "(không chữ)" },
+                        if !btn.emoji_name.is_empty() { &btn.emoji_name } else { "none" },
+                        channel_name
+                    ));
+
+                    match ctx
+                        .client
+                        .click_button(Some(guild_id), channel_id, &msg.id, app_id, &btn.custom_id)
+                        .await
+                    {
+                        Ok(true) => {
+                            ctx.clicked_buttons.lock().insert(click_key, Instant::now());
+                            ctx.log(format!(
+                                "[⚔️ Đánh Boss] ✅ Đã đánh thành công tại #{} (tin {})",
+                                channel_name, msg.id
+                            ));
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            ctx.log(format!("[⚔️ Đánh Boss] ❌ Lỗi bấm nút: {}", err));
+                        }
+                    }
+
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
+
     /// Thả reaction cho một lô tin nhắn.
     /// Trả về (số reaction mới, id tin cuối cùng đã react, có lỗi tạm thời không).
     async fn react_messages(
@@ -719,96 +897,8 @@ impl ReactorEngine {
             }
 
             // 1. Tự động click nút (Đánh Boss ⚔️) trên tin nhắn (kể cả tin nhắn của Bot)
-            if settings.auto_button_enabled && (!msg.components.is_empty() || msg.author.bot) {
-                for comp in &msg.components {
-                    let buttons: Vec<&crate::models::MessageComponent> = if comp.component_type == 1 {
-                        comp.components.iter().collect()
-                    } else if comp.component_type == 2 {
-                        vec![comp]
-                    } else {
-                        Vec::new()
-                    };
-
-                    for btn in buttons {
-                        if btn.disabled.unwrap_or(false) {
-                            continue;
-                        }
-                        let custom_id = match &btn.custom_id {
-                            Some(id) if !id.is_empty() => id,
-                            _ => continue,
-                        };
-
-                        let label = btn.label.as_deref().unwrap_or("");
-                        let emoji_name = btn.emoji.as_ref().and_then(|e| e.name.as_deref()).unwrap_or("");
-
-                        // Chuẩn hóa chuỗi (bỏ variation selector FE0F, khoảng trắng, chuyển chữ thường)
-                        let norm = |s: &str| -> String {
-                            s.replace('\u{fe0f}', "").trim().to_lowercase()
-                        };
-
-                        let norm_label = norm(label);
-                        let norm_emoji = norm(emoji_name);
-
-                        // Hỗ trợ nhiều từ khóa cách nhau bằng dấu phẩy
-                        let label_keywords: Vec<String> = settings
-                            .button_label_keyword
-                            .split(',')
-                            .map(|s| norm(s))
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        let emoji_keywords: Vec<String> = settings
-                            .button_emoji_keyword
-                            .split(',')
-                            .map(|s| norm(s))
-                            .filter(|s| !s.is_empty())
-                            .collect();
-
-                        let label_match = !label_keywords.is_empty()
-                            && label_keywords.iter().any(|kw| norm_label.contains(kw));
-                        let emoji_match = !emoji_keywords.is_empty()
-                            && emoji_keywords.iter().any(|kw| norm_emoji.contains(kw) || kw.contains(&norm_emoji));
-
-                        if label_match || emoji_match {
-                            let click_key = format!("{}:{}", msg.id, custom_id);
-                            {
-                                let clicked = ctx.clicked_buttons.lock();
-                                if clicked.contains(&click_key) {
-                                    continue;
-                                }
-                            }
-
-                            let app_id = msg.application_id.as_deref().unwrap_or(&msg.author.id);
-
-                            ctx.log(format!(
-                                "[⚔️ Đánh Boss] Phát hiện nút \"{}\" (emoji: {}) tại #{}, đang bấm...",
-                                if !label.is_empty() { label } else { "(không chữ)" },
-                                if !emoji_name.is_empty() { emoji_name } else { "none" },
-                                channel_name
-                            ));
-
-                            match ctx
-                                .client
-                                .click_button(Some(guild_id), channel_id, &msg.id, app_id, custom_id)
-                                .await
-                            {
-                                Ok(true) => {
-                                    // Ghi nhận đã bấm thành công để không bấm lại
-                                    ctx.clicked_buttons.lock().insert(click_key);
-                                    ctx.log(format!(
-                                        "[⚔️ Đánh Boss] ✅ Đã đánh thành công tại #{} (tin {})",
-                                        channel_name, msg.id
-                                    ));
-                                }
-                                Ok(false) => {}
-                                Err(err) => {
-                                    ctx.log(format!("[⚔️ Đánh Boss] ❌ Lỗi bấm nút: {}", err));
-                                }
-                            }
-
-                            sleep(Duration::from_millis(500)).await;
-                        }
-                    }
-                }
+            if settings.auto_button_enabled {
+                Self::check_and_click_buttons(ctx, guild_id, channel_id, channel_name, std::slice::from_ref(&msg), settings).await;
             }
 
             // 2. Thả reaction cho tin nhắn
@@ -921,6 +1011,13 @@ impl ReactorEngine {
         let mut newest_msg_id: Option<String> = None;
         let mut total_messages_scanned = 0u32;
         let max_msgs = settings.max_messages_per_channel;
+
+        // ── 0. ƯU TIÊN SỐ 1: BẮT BOSS TẠI CÁC TIN NHẮN MỚI NHẤT CỦA KÊNH ──
+        if settings.auto_button_enabled {
+            if let Ok(latest_msgs) = ctx.client.get_messages_before(channel_id, 10, None).await {
+                Self::check_and_click_buttons(ctx, guild_id, channel_id, channel_name, &latest_msgs, &settings).await;
+            }
+        }
 
         if settings.full_scan {
             // ── QUÉT TOÀN BỘ LỊCH SỬ KÊNH (Duyệt liên tục qua các trang 100 tin, không bị chặn) ──

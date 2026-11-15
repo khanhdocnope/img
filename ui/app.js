@@ -101,7 +101,7 @@ async function loadConfig() {
     document.getElementById("cfg-max-msgs").value = currentConfig.bot_settings.max_messages_per_channel || "";
 
     // Tự động Đánh Boss
-    document.getElementById("cfg-auto-button").checked = !!currentConfig.bot_settings.auto_button_enabled;
+    document.getElementById("cfg-auto-button").checked = currentConfig.bot_settings.auto_button_enabled !== false;
     document.getElementById("cfg-btn-label").value = currentConfig.bot_settings.button_label_keyword || "Đánh Boss";
     document.getElementById("cfg-btn-emoji").value = currentConfig.bot_settings.button_emoji_keyword || "⚔️";
 
