@@ -1,108 +1,221 @@
-import discord
-from discord.ext import commands
+import asyncio
+import json
+import os
 import sys
+import aiohttp
 
-# Khởi tạo Bot với tiền tố !
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+TOKEN = sys.argv[1].strip() if len(sys.argv) > 1 else os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 
-class BossBattleView(discord.ui.View):
-    def __init__(self, round_num=1, hp=291665, max_hp=428430):
-        super().__init__(timeout=None) # Không timeout để nút luôn bấm được
-        self.round_num = round_num
-        self.hp = hp
-        self.max_hp = max_hp
+API_URL = "https://discord.com/api/v10"
+GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
-    @discord.ui.button(
-        label="Đánh Boss",
-        style=discord.ButtonStyle.danger, # Nút đỏ Danger giống hệt game
-        emoji="⚔️",
-        custom_id="attack_boss_demo"
-    )
-    async def attack_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # In log ra terminal để người dùng kiểm chứng
-        user = interaction.user
-        print(f"\n[🎯 DEMO BOT NHẬN CLICK THÀNH CÔNG!]")
-        print(f"  👉 Người chơi: {user.name}#{user.discriminator} (ID: {user.id})")
-        print(f"  👉 Đã bấm nút: '⚔️ Đánh Boss' (custom_id: {button.custom_id})")
-        print(f"  👉 Kênh: #{interaction.channel.name} (ID: {interaction.channel_id})\n")
+# Kênh test mặc định trong server của bạn
+DEFAULT_TEST_CHANNEL = "1511740284893921511" # Kênh 🧪-test
 
-        # Trừ máu boss và tăng vòng
+# Trạng thái trận Boss
+boss_state = {
+    "hp": 291665,
+    "max_hp": 428430,
+    "round": 1,
+    "message_id": None,
+    "channel_id": DEFAULT_TEST_CHANNEL
+}
+
+def log(msg):
+    print(msg, flush=True)
+
+def get_headers():
+    return {
+        "Authorization": f"Bot {TOKEN}",
+        "Content-Type": "application/json",
+        "User-Agent": "DiscordBot (DemoBossBot, 1.0)"
+    }
+
+def create_boss_payload(round_num, hp, max_hp):
+    return {
+        "content": "**🔥 [THÔNG BÁO TRẬN ĐÁNH BOSS DEMO]**",
+        "embeds": [
+            {
+                "title": "⚔️ BOSS WAIFU: Cattleya Glory",
+                "description": "“Khoảng lặng này không dành cho kẻ do dự.”\n🔥 **Cattleya Glory** đạt 100 Nộ và tung **Phá Vỡ Giới Hạn — Cuồng Nộ Diệt Ngũ!**\n*Tool Auto-Reactor sẽ tự động bấm nút đỏ bên dưới để tấn công!*",
+                "color": 0xe74c3c, # Màu đỏ Danger
+                "fields": [
+                    {"name": "🩸 Máu Boss", "value": f"**{hp:,} / {max_hp:,}**", "inline": True},
+                    {"name": "🔄 Hiệp đấu", "value": f"VÒNG **{round_num}** / 10", "inline": True},
+                    {"name": "⏳ Thời gian", "value": "CÒN 06:00", "inline": True}
+                ],
+                "footer": {"text": "Bot Demo Test Đánh Boss • Sẵn sàng nhận click từ Auto Reactor"}
+            }
+        ],
+        "components": [
+            {
+                "type": 1, # ActionRow
+                "components": [
+                    {
+                        "type": 2, # Button
+                        "style": 4, # Danger (Đỏ)
+                        "label": "Đánh Boss",
+                        "emoji": {"name": "⚔️"},
+                        "custom_id": "attack_boss_demo",
+                        "disabled": hp <= 0
+                    },
+                    {
+                        "type": 2, # Button
+                        "style": 2, # Secondary (Xám)
+                        "label": "BXH sát thương",
+                        "emoji": {"name": "🏆"},
+                        "custom_id": "rank_boss_demo"
+                    }
+                ]
+            }
+        ]
+    }
+
+async def send_boss_message(session, channel_id):
+    url = f"{API_URL}/channels/{channel_id}/messages"
+    payload = create_boss_payload(boss_state["round"], boss_state["hp"], boss_state["max_hp"])
+    async with session.post(url, headers=get_headers(), json=payload) as resp:
+        if resp.status in (200, 201):
+            data = await resp.json()
+            boss_state["message_id"] = data["id"]
+            boss_state["channel_id"] = channel_id
+            log(f"\n[⚔️ BOSS SPAWN THÀNH CÔNG]")
+            log(f"  👉 Kênh ID: {channel_id}")
+            log(f"  👉 Tin nhắn ID: {data['id']}")
+            log(f"  👉 Nút xuất hiện: '⚔️ Đánh Boss' (custom_id: attack_boss_demo)")
+            log(f"👉 Hãy bật Tool Auto Reactor và cấu hình ID Kênh: {channel_id} để xem tool tự đánh!\n")
+        else:
+            err = await resp.text()
+            log(f"[!] Lỗi gửi tin nhắn Boss: {resp.status} - {err}")
+
+async def handle_interaction(session, interaction):
+    data = interaction.get("data", {})
+    custom_id = data.get("custom_id")
+    user = interaction.get("member", {}).get("user") or interaction.get("user", {})
+    user_name = user.get("username", "Người chơi")
+    user_id = user.get("id", "0")
+
+    inter_id = interaction.get("id")
+    inter_token = interaction.get("token")
+    callback_url = f"{API_URL}/interactions/{inter_id}/{inter_token}/callback"
+
+    if custom_id == "attack_boss_demo":
         dmg = 15200
-        self.hp = max(0, self.hp - dmg)
-        self.round_num = min(10, self.round_num + 1)
+        boss_state["hp"] = max(0, boss_state["hp"] - dmg)
+        boss_state["round"] = min(10, boss_state["round"] + 1)
+
+        log("\n" + "=" * 60)
+        log("🎯 [DEMO BOT: NHẬN ĐƯỢC CLICK NÚT ĐÁNH BOSS TỪ TOOL!]")
+        log(f"  👤 Người bấm: {user_name} (ID: {user_id})")
+        log(f"  ⚔️ Nút đã bấm: '⚔️ Đánh Boss' (custom_id: {custom_id})")
+        log(f"  🩸 Sát thương gây ra: -{dmg:,} HP (Máu boss còn: {boss_state['hp']:,} / {boss_state['max_hp']:,})")
+        log(f"  🔄 Tiến độ: Vòng {boss_state['round']} / 10")
+        log("=" * 60 + "\n")
 
         # Phản hồi interaction cho Discord
-        msg = f"⚔️ **{user.mention}** đã tung đòn tấn công Boss gây **{dmg:,}** sát thương!"
-        if self.hp <= 0:
-            msg += "\n🎉 **Boss đã bị tiêu diệt hoàn toàn!**"
-            button.disabled = True
-        else:
-            msg += f"\n🩸 Máu Boss còn lại: **{self.hp:,} / {self.max_hp:,}** (Vòng {self.round_num}/10)"
-
-        # Cập nhật tin nhắn boss để mô phỏng diễn biến tiếp theo
-        embed = interaction.message.embeds[0] if interaction.message.embeds else None
-        if embed:
-            embed.set_field_at(0, name="🩸 Máu Boss", value=f"{self.hp:,} / {self.max_hp:,}", inline=True)
-            embed.set_field_at(1, name="🔄 Tiến độ", value=f"Vòng {self.round_num} / 10", inline=True)
-
-        await interaction.response.send_message(msg, ephemeral=False)
-        try:
-            await interaction.message.edit(embed=embed, view=self)
-        except Exception:
+        reply_payload = {
+            "type": 4, # CHANNEL_MESSAGE_WITH_SOURCE
+            "data": {
+                "content": f"⚔️ **@{user_name}** đã tung đòn tấn công Boss thành công! Gây **{dmg:,}** sát thương! 🩸 Máu còn: **{boss_state['hp']:,}**"
+            }
+        }
+        async with session.post(callback_url, headers=get_headers(), json=reply_payload) as resp:
             pass
 
-    @discord.ui.button(
-        label="BXH sát thương",
-        style=discord.ButtonStyle.secondary, # Nút xám
-        emoji="🏆",
-        custom_id="rank_boss_demo"
-    )
-    async def rank_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("🏆 **BXH sát thương:**\n1. Top 1: 54,510\n2. Top 2: 28,160", ephemeral=True)
+        # Cập nhật lại tin nhắn Boss
+        msg_id = boss_state.get("message_id")
+        ch_id = boss_state.get("channel_id")
+        if msg_id and ch_id:
+            edit_url = f"{API_URL}/channels/{ch_id}/messages/{msg_id}"
+            new_payload = create_boss_payload(boss_state["round"], boss_state["hp"], boss_state["max_hp"])
+            async with session.patch(edit_url, headers=get_headers(), json=new_payload) as resp:
+                pass
 
-@bot.event
-async def on_ready():
-    print("=" * 60)
-    print(f"🤖 Bot Demo đã sẵn sàng: {bot.user.name} (ID: {bot.user.id})")
-    print("💡 Hướng dẫn test:")
-    print("  1. Vào server/kênh Discord của bạn.")
-    print("  2. Gõ lệnh: !boss")
-    print("  3. Bot sẽ gửi tin nhắn có nút '⚔️ Đánh Boss'.")
-    print("  4. Bật tool Auto Reactor và xem tool tự động bấm nút!")
-    print("=" * 60)
+    elif custom_id == "rank_boss_demo":
+        reply_payload = {
+            "type": 4,
+            "data": {
+                "content": f"🏆 **BXH sát thương hiện tại:**\n1. @{user_name}: 35,400\n2. Darling: 24,612",
+                "flags": 64 # Ephemeral
+            }
+        }
+        async with session.post(callback_url, headers=get_headers(), json=reply_payload) as resp:
+            pass
 
-@bot.command(name="boss")
-async def spawn_boss(ctx):
-    """Lệnh tạo boss giả lập: !boss"""
-    embed = discord.Embed(
-        title="⚔️ TRẬN ĐÁNH BOSS: Cattleya Glory",
-        description="🔥 **Cattleya Glory** đạt 100 Nộ và tung **Phá Vỡ Giới Hạn — Cuồng Nộ Diệt Ngũ!**\n*Hãy bấm nút bên dưới để tấn công boss!*",
-        color=0xe74c3c
-    )
-    embed.add_field(name="🩸 Máu Boss", value="291,665 / 428,430", inline=True)
-    embed.add_field(name="🔄 Tiến độ", value="Vòng 1 / 10", inline=True)
-    embed.add_field(name="⏳ Thời gian", value="Còn 06:00", inline=True)
-    embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1042784747065380904.webp?size=96&quality=lossless")
-    embed.set_footer(text="Bot Game Demo • Bấm Đánh Boss để gây sát thương")
+async def heartbeat(ws, interval):
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await ws.send_json({"op": 1, "d": None})
+        except Exception:
+            break
 
-    view = BossBattleView()
-    await ctx.send(content="**[THÔNG BÁO BOSS XUẤT HIỆN]**", embed=embed, view=view)
-    print(f"[BOT] Đã tạo trận Boss tại kênh #{ctx.channel.name} (ID: {ctx.channel.id})")
+async def main():
+    async with aiohttp.ClientSession() as session:
+        # Lấy thông tin bot
+        async with session.get(f"{API_URL}/users/@me", headers=get_headers()) as resp:
+            if resp.status != 200:
+                log(f"❌ Token bot không hợp lệ! HTTP {resp.status}")
+                return
+            bot_info = await resp.json()
+            log("=" * 60)
+            log(f"🤖 Bot Demo đã sẵn sàng: {bot_info['username']} (ID: {bot_info['id']})")
+            log(f"🎯 Kênh test mặc định: #{DEFAULT_TEST_CHANNEL}")
+            log("=" * 60)
+
+        # Gửi luôn 1 tin nhắn boss ban đầu để sẵn sàng test
+        await send_boss_message(session, DEFAULT_TEST_CHANNEL)
+
+        # Kết nối Discord Gateway
+        while True:
+            try:
+                async with session.ws_connect(GATEWAY_URL) as ws:
+                    hb_task = None
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            op = data.get("op")
+                            t = data.get("t")
+                            d = data.get("d")
+
+                            if op == 10:
+                                interval = d["heartbeat_interval"] / 1000.0
+                                if hb_task:
+                                    hb_task.cancel()
+                                hb_task = asyncio.create_task(heartbeat(ws, interval))
+
+                                identify_payload = {
+                                    "op": 2,
+                                    "d": {
+                                        "token": TOKEN,
+                                        "intents": 513, # GUILDS + GUILD_MESSAGES
+                                        "properties": {
+                                            "os": "windows",
+                                            "browser": "demo_bot",
+                                            "device": "demo_bot"
+                                        }
+                                    }
+                                }
+                                await ws.send_json(identify_payload)
+
+                            elif t == "READY":
+                                log("✅ [GATEWAY SẴN SÀNG] Bot Demo đang chạy nền và chờ Tool bấm nút!")
+
+                            elif t == "INTERACTION_CREATE":
+                                asyncio.create_task(handle_interaction(session, d))
+
+            except Exception as e:
+                log(f"[!] Mất kết nối Gateway, đang kết nối lại sau 3s: {e}")
+                await asyncio.sleep(3)
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        token = sys.argv[1].strip()
-    else:
-        print("\n=== BOT DISCORD DEMO TEST ĐÁNH BOSS ===")
-        token = input("Nhập Bot Token của bạn (hoặc chạy: python demo_boss_bot.py <TOKEN>): ").strip()
-
-    if not token:
-        print("❌ Chưa nhập Token!")
-        sys.exit(1)
-
+    if not TOKEN:
+        log("\n=== BOT DISCORD DEMO TEST ĐÁNH BOSS ===")
+        TOKEN = input("Nhập Bot Token (hoặc chạy: python demo_boss_bot.py <TOKEN>): ").strip()
+        if not TOKEN:
+            log("❌ Chưa nhập Token!")
+            sys.exit(1)
     try:
-        bot.run(token)
-    except Exception as e:
-        print(f"❌ Lỗi chạy bot: {e}")
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log("\nĐã dừng Bot Demo.")
