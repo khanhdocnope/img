@@ -363,7 +363,7 @@ async fn main() {
     }
 
     let engine = Arc::new(ReactorEngine::new());
-    let log_history = Arc::new(RwLock::new(vec!["Discord Reactor Server đã khởi động...".to_string()]));
+    let log_history = Arc::new(RwLock::new(vec!["Discord Reactor Server v1.0.1 (Có Auto Boss Watcher) đã khởi động...".to_string()]));
     let (log_tx, _) = broadcast::channel::<String>(512);
 
     let state = ServerState {
@@ -395,7 +395,7 @@ async fn main() {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("═══════════════════════════════════════════════════════════════");
-    println!("🚀 Discord Reactor Web Server đang chạy tại http://0.0.0.0:{}", port);
+    println!("🚀 Discord Reactor Web Server v1.0.1 (Có Auto Boss Watcher) đang chạy tại http://0.0.0.0:{}", port);
     println!("👉 Truy cập Dashboard qua trình duyệt để điều khiển Bot.");
     println!("═══════════════════════════════════════════════════════════════");
 
