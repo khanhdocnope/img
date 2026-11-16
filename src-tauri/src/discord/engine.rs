@@ -518,6 +518,7 @@ impl ReactorEngine {
         let mut cached_channel_id: Option<u64> = None;
         let mut cached_guild_id: Option<String> = None;
         let mut cached_channel_name = String::new();
+        let mut logged_empty = false;
 
         while ctx.alive() {
             let config = ctx.config_mgr.get_config();
@@ -530,9 +531,14 @@ impl ReactorEngine {
 
             let ch_str = settings.button_channel_id.trim();
             if ch_str.is_empty() {
+                if !logged_empty {
+                    ctx.log("[⚔️ Boss Watcher] ℹ️ Chưa cài đặt 'ID Kênh đánh Boss' (đang để trống) -> Tool chỉ tìm boss trong Danh mục đang quét.".to_string());
+                    logged_empty = true;
+                }
                 Self::sleep_while_running(3.0, &ctx.run).await;
                 continue;
             }
+            logged_empty = false;
 
             let ch_id: u64 = match ch_str.parse() {
                 Ok(id) => id,
