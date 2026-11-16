@@ -570,13 +570,14 @@ impl ReactorEngine {
                 }
             };
 
-            // Lấy 5 tin nhắn mới nhất trên cùng của kênh
-            match ctx.client.get_messages_before(ch_id, 5, None).await {
+            // Lấy 15 tin nhắn mới nhất trên cùng của kênh (tránh trôi tin khi có người chat)
+            match ctx.client.get_messages_before(ch_id, 15, None).await {
                 Ok(msgs) => {
                     Self::check_and_click_buttons(&ctx, &gid, ch_id, &cached_channel_name, &msgs, &settings).await;
                 }
                 Err(err) => {
                     if err.contains("403") {
+                        ctx.log(format!("[⚔️ Boss Watcher] 403 Forbidden tại kênh boss #{}.", cached_channel_name));
                         Self::sleep_while_running(30.0, &ctx.run).await;
                         continue;
                     }
